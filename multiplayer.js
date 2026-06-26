@@ -15,6 +15,7 @@
     selected: new Set(),
     selectedGuess: null,
     lowLikely: new Set(),
+    rulesOpen: false,
     error: "",
   };
 
@@ -68,6 +69,16 @@
     const action = target.dataset.action;
     const seq = target.dataset.seq;
     try {
+      if (action === "open-rules") {
+        store.rulesOpen = true;
+        render();
+        return;
+      }
+      if (action === "close-rules") {
+        store.rulesOpen = false;
+        render();
+        return;
+      }
       if (action === "create-room") {
         const name = document.getElementById("player-name").value;
         saveSession(await api("/api/rooms", { name }));
@@ -254,10 +265,16 @@
       return;
     }
     if (store.state.phase === "lobby") {
-      app.innerHTML = renderLobby();
+      app.innerHTML = `
+        ${renderLobby()}
+        ${store.rulesOpen ? renderRulesModal() : ""}
+      `;
       return;
     }
-    app.innerHTML = renderGame();
+    app.innerHTML = `
+      ${renderGame()}
+      ${store.rulesOpen ? renderRulesModal() : ""}
+    `;
   }
 
   function renderHome() {
@@ -295,7 +312,7 @@
     const playerCount = Math.max(store.lobbyPlayerCount || state.playerCount, humanCount);
     const aiTypes = store.lobbyAiTypes || state.aiTypes;
     return `
-      ${renderHeader()}
+      ${renderHeader(false)}
       <main class="multiplayer-layout">
         <section class="mp-panel">
           <div class="panel-head">
@@ -327,7 +344,13 @@
               </label>
             `).join("")}
           </div>
-          ${isHost ? `<button class="primary" data-action="start-game">Start Game</button>` : `<div class="mp-wait">Waiting for host.</div>`}
+          <div class="action-buttons setup-actions">
+            ${isHost ? `<button class="primary" data-action="start-game">Start Game</button>` : `<div class="mp-wait">Waiting for host.</div>`}
+            <button class="quiet help-lobby-button" data-action="open-rules">
+              <span class="help-symbol" aria-hidden="true">?</span>
+              How to Play
+            </button>
+          </div>
         </aside>
       </main>
     `;
@@ -359,12 +382,49 @@
     `;
   }
 
-  function renderHeader() {
+  function renderHeader(showHelp = true) {
     return `
       <header class="topbar">
         <div class="brand"><div class="mark" aria-hidden="true"></div><div><h1>Sequence Table Online</h1><span>X=4 realtime room</span></div></div>
-        <div class="settings"><a class="quiet button-link" href="./index.html">Solo</a></div>
+        <div class="settings">
+          ${showHelp ? renderHelpButton() : ""}
+          <a class="quiet button-link" href="./index.html">Solo</a>
+        </div>
       </header>
+    `;
+  }
+
+  function renderHelpButton() {
+    return `
+      <button class="quiet icon-button help-icon-button" data-action="open-rules" data-tooltip="How to play" aria-label="How to play">
+        <span aria-hidden="true">?</span>
+      </button>
+    `;
+  }
+
+  function renderRulesModal() {
+    return `
+      <div class="rules-modal">
+        <section class="rules-card" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+          <div class="rules-head">
+            <div>
+              <h2 id="rules-title">How to Play</h2>
+              <p>Find the hidden order of four unique digits. Books are public, but verification results stay private.</p>
+            </div>
+            <button class="quiet icon-button" data-action="close-rules" aria-label="Close rules" title="Close">X</button>
+          </div>
+          <div class="rules-actions">
+            <div><strong>Add</strong><span>Put 3 candidates in your public book.</span></div>
+            <div><strong>Verify Mine</strong><span>Select any live entries in your book. Learn privately whether the answer is among them.</span></div>
+            <div><strong>Verify Table</strong><span>Check the union of every public book, then skip your next turn.</span></div>
+            <div><strong>Submit</strong><span>Choose one candidate. A wrong guess becomes public and costs your next turn.</span></div>
+          </div>
+          <div class="rules-notes">
+            <p><strong>Read the table.</strong> Everyone sees which action was taken, but not a private Yes/No result. Opponents' choices can reveal what they learned.</p>
+            <p><strong>Race and score.</strong> Correct players keep their rank while the rest continue. Scores are 5/0, 5/3/0, or 5/3/2/0 by lobby size; ties share averaged placement points. First to 15 wins.</p>
+          </div>
+        </section>
+      </div>
     `;
   }
 

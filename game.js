@@ -67,6 +67,7 @@
       drawerOpen: false,
       aiLogsOpen: false,
       resultModalOpen: false,
+      rulesOpen: false,
       drawerPage: 0,
       selectedAdd: new Set(),
       selectedVerify: new Set(),
@@ -1141,6 +1142,20 @@
     const action = target.dataset.action;
     const seq = target.dataset.seq;
 
+    if (action === "open-rules") {
+      state.ui.rulesOpen = true;
+      playCue("select");
+      render();
+      return;
+    }
+
+    if (action === "close-rules") {
+      state.ui.rulesOpen = false;
+      playCue("select");
+      render();
+      return;
+    }
+
     if (action === "start-game") {
       playCue("select");
       startNewGame();
@@ -1360,7 +1375,10 @@
 
   function render() {
     if (state.phase === "setup") {
-      app.innerHTML = renderSetupScreen();
+      app.innerHTML = `
+        ${renderSetupScreen()}
+        ${state.ui.rulesOpen ? renderRulesModal() : ""}
+      `;
       return;
     }
 
@@ -1380,6 +1398,7 @@
       ${state.ui.drawerOpen ? renderCandidateDrawer() : ""}
       ${state.ui.aiLogsOpen ? renderAiLogsDrawer() : ""}
       ${isReviewPhase() && state.ui.resultModalOpen ? renderRoundModal() : ""}
+      ${state.ui.rulesOpen ? renderRulesModal() : ""}
     `;
   }
 
@@ -1430,6 +1449,10 @@
           </div>
           <div class="action-buttons setup-actions">
             <button class="primary" data-action="start-game">Start Game</button>
+            <button class="quiet help-lobby-button" data-action="open-rules">
+              <span class="help-symbol" aria-hidden="true">?</span>
+              How to Play
+            </button>
             <label class="setting" for="sound-toggle">Sound
               <input id="sound-toggle" type="checkbox" ${state.config.sound ? "checked" : ""} />
             </label>
@@ -1450,6 +1473,7 @@
           </div>
         </div>
         <div class="settings">
+          ${renderHelpButton()}
           <label class="setting" for="sound-toggle">Sound
             <input id="sound-toggle" type="checkbox" ${state.config.sound ? "checked" : ""} />
           </label>
@@ -1457,6 +1481,41 @@
           <button class="quiet" data-action="new-game">Restart</button>
         </div>
       </header>
+    `;
+  }
+
+  function renderHelpButton() {
+    return `
+      <button class="quiet icon-button help-icon-button" data-action="open-rules" data-tooltip="How to play" aria-label="How to play">
+        <span aria-hidden="true">?</span>
+      </button>
+    `;
+  }
+
+  function renderRulesModal() {
+    const scoring = SCORE_BY_PLAYERS[state.config.playerCount].join("/");
+    return `
+      <div class="rules-modal">
+        <section class="rules-card" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+          <div class="rules-head">
+            <div>
+              <h2 id="rules-title">How to Play</h2>
+              <p>Find the hidden order of ${state.config.sequenceLength} unique digits. Books are public, but verification results stay private.</p>
+            </div>
+            <button class="quiet icon-button" data-action="close-rules" aria-label="Close rules" title="Close">X</button>
+          </div>
+          <div class="rules-actions">
+            <div><strong>Add</strong><span>Put ${currentAddAmount()} candidates in your public book.</span></div>
+            <div><strong>Verify Mine</strong><span>Select any live entries in your book. Learn privately whether the answer is among them.</span></div>
+            <div><strong>Verify Table</strong><span>Check the union of every public book, then skip your next turn.</span></div>
+            <div><strong>Submit</strong><span>Choose one candidate. A wrong guess becomes public and costs your next turn.</span></div>
+          </div>
+          <div class="rules-notes">
+            <p><strong>Read the table.</strong> Everyone sees which action was taken, but not a private Yes/No result. Opponents' choices can reveal what they learned.</p>
+            <p><strong>Race and score.</strong> Correct players keep their rank while the rest continue. ${state.config.playerCount}-player scoring is ${scoring}; ties share averaged placement points. First to ${state.config.target} wins.</p>
+          </div>
+        </section>
+      </div>
     `;
   }
 
