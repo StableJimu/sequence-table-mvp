@@ -18,6 +18,20 @@ Open `index.html` in a browser.
 
 No install step is required for the game itself. It is plain HTML, CSS, and JavaScript.
 
+For the multiplayer prototype, run the local Node server:
+
+```bash
+npm start
+```
+
+Then open:
+
+```text
+http://localhost:3000/multiplayer.html
+```
+
+The multiplayer prototype is X=4 only. It supports room codes, 2-4 seats, human joins, and AI-filled empty seats. The server owns the hidden answer, verification results, private candidate books, and AI turns.
+
 ## Game Modes
 
 - Players: 2 to 4
@@ -90,3 +104,9 @@ node tools/ai-selfplay.js search
 The tuner mutates constants such as verify value, table-check value, skip penalty, submit threshold value, and softmax temperature. It then runs many simulated games and keeps constants that improve average finish time while controlling reckless wrong submissions.
 
 The tuned constants are copied into `game.js` as `AI_TUNING`.
+
+## Online Multiplayer Hosting
+
+The GitHub Pages link can host the solo static prototype, but friend lobbies need a running backend. The included `server.js` uses plain Node HTTP plus Server-Sent Events, so it can be deployed to a Node host such as Render, Railway, Fly.io, or a small VPS.
+
+For a deployed multiplayer build, share the hosted `/multiplayer.html` room link with friends. The host creates a room, sets 2-4 seats, chooses AI types for empty seats, and starts the game.

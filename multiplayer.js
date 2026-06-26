@@ -1,0 +1,383 @@
+(() => {
+  "use strict";
+
+  const app = document.getElementById("app");
+  const ALL_AI_TYPES = ["Reader", "Binary", "Balanced", "Aggressive", "Cautious"];
+  const store = {
+    code: localStorage.getItem("st_room") || "",
+    playerId: localStorage.getItem("st_player") || "",
+    token: localStorage.getItem("st_token") || "",
+    state: null,
+    source: null,
+    selectedAction: "add",
+    selected: new Set(),
+    selectedGuess: null,
+    error: "",
+  };
+
+  app.addEventListener("click", handleClick);
+  app.addEventListener("change", handleChange);
+  connectIfReady();
+  render();
+
+  async function api(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Request failed");
+    return data;
+  }
+
+  function saveSession(data) {
+    store.code = data.code;
+    store.playerId = data.playerId;
+    store.token = data.token;
+    localStorage.setItem("st_room", store.code);
+    localStorage.setItem("st_player", store.playerId);
+    localStorage.setItem("st_token", store.token);
+    connectIfReady(true);
+  }
+
+  function connectIfReady(force = false) {
+    if (!store.code || !store.playerId || !store.token) return;
+    if (store.source && !force) return;
+    if (store.source) store.source.close();
+    store.source = new EventSource(`/events/${store.code}?playerId=${encodeURIComponent(store.playerId)}&token=${encodeURIComponent(store.token)}`);
+    store.source.addEventListener("state", (event) => {
+      store.state = JSON.parse(event.data);
+      store.error = "";
+      render();
+    });
+    store.source.onerror = () => {
+      store.error = "Disconnected. Refresh or rejoin if this stays stuck.";
+      render();
+    };
+  }
+
+  async function handleClick(event) {
+    const target = event.target.closest("[data-action]");
+    if (!target) return;
+    const action = target.dataset.action;
+    const seq = target.dataset.seq;
+    try {
+      if (action === "create-room") {
+        const name = document.getElementById("player-name").value;
+        saveSession(await api("/api/rooms", { name }));
+        return;
+      }
+      if (action === "join-room") {
+        const name = document.getElementById("join-name").value;
+        const code = document.getElementById("join-code").value.trim().toUpperCase();
+        saveSession(await api(`/api/rooms/${code}/join`, { name }));
+        return;
+      }
+      if (action === "leave-room") {
+        if (store.source) store.source.close();
+        localStorage.removeItem("st_room");
+        localStorage.removeItem("st_player");
+        localStorage.removeItem("st_token");
+        Object.assign(store, { code: "", playerId: "", token: "", state: null, source: null });
+        render();
+        return;
+      }
+      if (action === "start-game") {
+        const playerCount = Number(document.getElementById("mp-player-count").value);
+        const aiTypes = [1, 2, 3].map((index) => document.getElementById(`mp-ai-${index}`).value);
+        await api(`/api/rooms/${store.code}/start`, { playerId: store.playerId, token: store.token, playerCount, aiTypes });
+        return;
+      }
+      if (action === "copy-link") {
+        await navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${store.code}`);
+        store.error = "Room link copied.";
+        render();
+        return;
+      }
+      if (action === "select-action") {
+        store.selectedAction = target.dataset.kind;
+        store.selected = new Set();
+        store.selectedGuess = null;
+        render();
+        return;
+      }
+      if (action === "toggle-seq" && seq) {
+        toggleSeq(seq);
+        render();
+        return;
+      }
+      if (action === "quick-fill") {
+        quickFill(false);
+        render();
+        return;
+      }
+      if (action === "quick-fill-table") {
+        quickFill(true);
+        render();
+        return;
+      }
+      if (action === "submit-action") {
+        await submitAction();
+        return;
+      }
+    } catch (error) {
+      store.error = error.message;
+      render();
+    }
+  }
+
+  function handleChange(event) {
+    if (event.target.id === "mp-player-count") render();
+  }
+
+  function toggleSeq(seq) {
+    if (store.selectedAction === "submit") {
+      store.selectedGuess = store.selectedGuess === seq ? null : seq;
+      return;
+    }
+    if (store.selected.has(seq)) store.selected.delete(seq);
+    else {
+      if (store.selectedAction === "add" && store.selected.size >= store.state.addAmount) return;
+      store.selected.add(seq);
+    }
+  }
+
+  function quickFill(uncoveredOnly) {
+    const state = store.state;
+    const table = currentTableSet();
+    const addable = state.viewer.candidate
+      .filter((seq) => !state.viewer.book.includes(seq))
+      .filter((seq) => !store.selected.has(seq))
+      .filter((seq) => !uncoveredOnly || !table.has(seq));
+    while (store.selected.size < state.addAmount && addable.length > 0) {
+      const index = Math.floor(Math.random() * addable.length);
+      store.selected.add(addable.splice(index, 1)[0]);
+    }
+  }
+
+  async function submitAction() {
+    const type = store.selectedAction;
+    const action = { type };
+    if (type === "add") action.sequences = [...store.selected];
+    if (type === "verifyMine") action.selection = [...store.selected];
+    if (type === "submit") action.guess = store.selectedGuess;
+    await api(`/api/rooms/${store.code}/action`, { playerId: store.playerId, token: store.token, action });
+    store.selected = new Set();
+    store.selectedGuess = null;
+  }
+
+  function render() {
+    if (!store.state) {
+      app.innerHTML = renderHome();
+      return;
+    }
+    if (store.state.phase === "lobby") {
+      app.innerHTML = renderLobby();
+      return;
+    }
+    app.innerHTML = renderGame();
+  }
+
+  function renderHome() {
+    return `
+      <section class="setup-screen">
+        <div class="setup-card">
+          <div class="brand setup-brand">
+            <div class="mark" aria-hidden="true"></div>
+            <div><h1>Sequence Table Online</h1><span>X=4 multiplayer prototype</span></div>
+          </div>
+          ${store.error ? `<div class="private-line">${escapeHtml(store.error)}</div>` : ""}
+          <div class="mode-grid">
+            <div class="mode-field mp-form">
+              <span>Create</span>
+              <input id="player-name" placeholder="Your name" />
+              <button class="primary" data-action="create-room">Create Room</button>
+            </div>
+            <div class="mode-field mp-form">
+              <span>Join</span>
+              <input id="join-name" placeholder="Your name" />
+              <input id="join-code" placeholder="Room code" value="${new URLSearchParams(location.search).get("room") || ""}" />
+              <button class="accent" data-action="join-room">Join Room</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderLobby() {
+    const state = store.state;
+    const viewer = state.players.find((player) => player.id === state.viewerId);
+    const isHost = state.hostId === state.viewerId;
+    const humanCount = state.players.filter((player) => player.type === "human").length;
+    const playerCount = Math.max(state.playerCount, humanCount);
+    return `
+      ${renderHeader()}
+      <main class="multiplayer-layout">
+        <section class="mp-panel">
+          <div class="panel-head">
+            <div><h2>Lobby</h2><div class="panel-subtitle">Send this code to friends</div></div>
+            <div class="room-code">${state.code}</div>
+          </div>
+          <div class="action-buttons">
+            <button class="accent copy-link" data-action="copy-link">Copy Room Link</button>
+            <button class="quiet" data-action="leave-room">Leave</button>
+          </div>
+          <div class="rank-list">
+            ${state.players.map((player) => `<div class="rank-row"><strong>${escapeHtml(player.name)}</strong><span>${escapeHtml(player.personality)} ${player.connected ? "online" : "offline"}</span></div>`).join("")}
+          </div>
+        </section>
+        <aside class="mp-panel">
+          <div class="panel-head"><div><h2>Start</h2><div class="panel-subtitle">X=4, ${viewer.host ? "host controls" : "waiting for host"}</div></div></div>
+          <label class="mode-field" for="mp-player-count"><span>Seats</span>
+            <select id="mp-player-count" ${isHost ? "" : "disabled"}>
+              ${[2, 3, 4].map((count) => `<option value="${count}" ${count === playerCount ? "selected" : ""} ${count < humanCount ? "disabled" : ""}>${count}</option>`).join("")}
+            </select>
+          </label>
+          <div class="ai-seat-grid">
+            ${[1, 2, 3].map((index) => `
+              <label class="mode-field" for="mp-ai-${index}">
+                <span>${["AI 1", "AI 2", "AI 3"][index - 1]}</span>
+                <select id="mp-ai-${index}" ${isHost ? "" : "disabled"}>
+                  ${ALL_AI_TYPES.map((type) => `<option value="${type}" ${type === (state.aiTypes[index - 1] || "Balanced") ? "selected" : ""}>${type}</option>`).join("")}
+                </select>
+              </label>
+            `).join("")}
+          </div>
+          ${isHost ? `<button class="primary" data-action="start-game">Start Game</button>` : `<div class="mp-wait">Waiting for host.</div>`}
+        </aside>
+      </main>
+    `;
+  }
+
+  function renderGame() {
+    const state = store.state;
+    return `
+      ${renderHeader()}
+      <section class="status-strip">
+        <div class="status-item"><div class="label">Room</div><div class="value">${state.code}</div></div>
+        <div class="status-item"><div class="label">Round</div><div class="value">${state.roundNumber}</div></div>
+        <div class="status-item"><div class="label">Candidates</div><div class="value">${state.viewer.candidate.length} / 24</div></div>
+        <div class="status-item"><div class="label">Status</div><div class="value">${state.viewer.ranked ? `#${state.viewer.rank}` : state.viewer.pending ? "Submitted" : "Choose"}</div></div>
+      </section>
+      <main class="multiplayer-layout">
+        <section class="table-stage">
+          ${state.players.map((player) => renderPlayer(player)).join("")}
+          <div class="center-table">
+            <div class="center-title"><div><h2>${state.phase === "ended" ? "Puzzle Complete" : "Hidden sequence"}</h2><div class="answer-mask">${renderAnswerMask()}</div></div></div>
+            <div class="action-feed">${state.publicFeed.map((line) => `<div class="feed-line">${escapeHtml(line)}</div>`).join("")}</div>
+          </div>
+        </section>
+        <aside class="action-panel">
+          ${state.phase === "ended" ? renderResult() : renderActionPanel()}
+        </aside>
+      </main>
+    `;
+  }
+
+  function renderHeader() {
+    return `
+      <header class="topbar">
+        <div class="brand"><div class="mark" aria-hidden="true"></div><div><h1>Sequence Table Online</h1><span>X=4 realtime room</span></div></div>
+        <div class="settings"><a class="quiet button-link" href="./index.html">Solo</a></div>
+      </header>
+    `;
+  }
+
+  function renderPlayer(player) {
+    return `
+      <div class="player-panel ${player.id === store.state.viewerId ? "is-human" : ""} ${player.ranked ? "is-ranked" : ""}">
+        <div class="player-head"><div><div class="player-name">${escapeHtml(player.name)}</div><span class="badge">${escapeHtml(player.personality)}</span></div><div class="score">${player.score}</div></div>
+        <div class="player-meta">
+          <div class="mini-stat"><strong>${player.book.length}</strong><span>Book</span></div>
+          <div class="mini-stat"><strong>${player.ranked ? `${player.tied ? "Tie " : ""}#${player.rank}` : player.skipNext ? "Skip" : "Live"}</strong><span>Status</span></div>
+          <div class="mini-stat"><strong>${escapeHtml(player.lastAction)}</strong><span>Action</span></div>
+        </div>
+        <div class="book-preview">${player.book.slice(-20).map((seq) => `<span class="seq-chip bright">${seq}</span>`).join("") || `<span class="badge">Empty</span>`}</div>
+      </div>
+    `;
+  }
+
+  function renderActionPanel() {
+    const state = store.state;
+    if (state.viewer.ranked) return `<div class="mp-wait">You finished. Waiting for the table.</div>${renderPrivateLog()}`;
+    if (state.viewer.skipNext) return `<div class="mp-wait">Skipping this round.</div>${renderPrivateLog()}`;
+    if (state.viewer.pending) return `<div class="mp-wait">Action submitted. Waiting for other players.</div>${renderPrivateLog()}`;
+    return `
+      <div class="panel-head"><div><h2>${actionLabel(store.selectedAction)}</h2><div class="panel-subtitle">Pick and submit your round action.</div></div></div>
+      <div class="mp-action-tabs">
+        ${["add", "verifyMine", "verifyTable", "submit"].map((type) => `<button class="${store.selectedAction === type ? "primary" : "quiet"}" data-action="select-action" data-kind="${type}">${actionLabel(type)}</button>`).join("")}
+      </div>
+      ${renderActionBody()}
+      ${renderPrivateLog()}
+    `;
+  }
+
+  function renderActionBody() {
+    if (store.selectedAction === "verifyTable") {
+      return `<div class="empty-note">Check all public books and skip your next round.</div><button class="primary" data-action="submit-action">Check Table</button>`;
+    }
+    const state = store.state;
+    const table = currentTableSet();
+    let sequences = [];
+    if (store.selectedAction === "add") {
+      sequences = state.viewer.candidate
+        .filter((seq) => !state.viewer.book.includes(seq))
+        .sort((left, right) => Number(table.has(left)) - Number(table.has(right)));
+    } else if (store.selectedAction === "verifyMine") {
+      sequences = state.viewer.book.filter((seq) => state.viewer.candidate.includes(seq));
+    } else {
+      sequences = state.viewer.candidate;
+    }
+    return `
+      ${store.selectedAction === "add" ? `<div class="book-tools"><button class="accent" data-action="quick-fill">Quick Fill</button><button class="accent" data-action="quick-fill-table">Fill Not On Table</button></div>` : ""}
+      <div class="mp-seq-grid">
+        ${sequences.map((seq) => {
+          const selected = store.selectedAction === "submit" ? store.selectedGuess === seq : store.selected.has(seq);
+          return `<button class="seq-chip bright selectable ${selected ? "selected" : ""}" data-action="toggle-seq" data-seq="${seq}">${seq}</button>`;
+        }).join("") || `<div class="empty-note">No available sequences.</div>`}
+      </div>
+      <button class="primary" data-action="submit-action">Submit ${actionLabel(store.selectedAction)}</button>
+    `;
+  }
+
+  function renderPrivateLog() {
+    return `<div class="private-log mp-private-log">${store.state.viewer.privateLog.slice(0, 12).map((line) => `<div class="private-line">${escapeHtml(line)}</div>`).join("")}</div>`;
+  }
+
+  function renderResult() {
+    const result = store.state.puzzleResult;
+    return `
+      <div class="panel-head"><div><h2>Puzzle Complete</h2><div class="panel-subtitle">Answer ${result.answer} / ${result.roundsUsed} rounds</div></div></div>
+      <div class="rank-list">
+        ${result.ranks.map((rank) => `<div class="rank-row"><strong>${rank.tied ? `Tie #${rank.rank}` : `#${rank.rank}`} ${escapeHtml(rank.name)}</strong><span>R${rank.finishRound} / +${rank.points}</span></div>`).join("")}
+      </div>
+      ${renderPrivateLog()}
+    `;
+  }
+
+  function currentTableSet() {
+    const set = new Set();
+    store.state.players.forEach((player) => player.book.forEach((seq) => set.add(seq)));
+    return set;
+  }
+
+  function renderAnswerMask() {
+    const answer = store.state.puzzleResult?.answer || "????";
+    return answer.split("").map((digit) => `<span class="digit-tile">${store.state.phase === "ended" ? digit : "?"}</span>`).join("");
+  }
+
+  function actionLabel(type) {
+    return { add: "Add", verifyMine: "Verify Mine", verifyTable: "Verify Table", submit: "Submit" }[type] || "Action";
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+})();
