@@ -9,6 +9,8 @@
     token: localStorage.getItem("st_token") || "",
     state: null,
     source: null,
+    lobbyPlayerCount: null,
+    lobbyAiTypes: null,
     selectedAction: "add",
     selected: new Set(),
     selectedGuess: null,
@@ -84,9 +86,17 @@
         return;
       }
       if (action === "start-game") {
-        const playerCount = Number(document.getElementById("mp-player-count").value);
-        const aiTypes = [1, 2, 3].map((index) => document.getElementById(`mp-ai-${index}`).value);
+        const playerCount = store.lobbyPlayerCount || Number(document.getElementById("mp-player-count").value);
+        const aiTypes = store.lobbyAiTypes || [1, 2, 3].map((index) => document.getElementById(`mp-ai-${index}`).value);
         await api(`/api/rooms/${store.code}/start`, { playerId: store.playerId, token: store.token, playerCount, aiTypes });
+        return;
+      }
+      if (action === "new-game") {
+        await api(`/api/rooms/${store.code}/new-game`, { playerId: store.playerId, token: store.token });
+        return;
+      }
+      if (action === "back-to-lobby") {
+        await api(`/api/rooms/${store.code}/lobby`, { playerId: store.playerId, token: store.token });
         return;
       }
       if (action === "copy-link") {
@@ -128,7 +138,17 @@
   }
 
   function handleChange(event) {
-    if (event.target.id === "mp-player-count") render();
+    if (event.target.id === "mp-player-count") {
+      store.lobbyPlayerCount = Number(event.target.value);
+      render();
+    }
+    if (event.target.id?.startsWith("mp-ai-")) {
+      const index = Number(event.target.id.replace("mp-ai-", "")) - 1;
+      const source = store.lobbyAiTypes || store.state?.aiTypes || ["Reader", "Binary", "Balanced"];
+      store.lobbyAiTypes = [...source];
+      store.lobbyAiTypes[index] = event.target.value;
+      render();
+    }
   }
 
   function toggleSeq(seq) {
@@ -211,7 +231,8 @@
     const viewer = state.players.find((player) => player.id === state.viewerId);
     const isHost = state.hostId === state.viewerId;
     const humanCount = state.players.filter((player) => player.type === "human").length;
-    const playerCount = Math.max(state.playerCount, humanCount);
+    const playerCount = Math.max(store.lobbyPlayerCount || state.playerCount, humanCount);
+    const aiTypes = store.lobbyAiTypes || state.aiTypes;
     return `
       ${renderHeader()}
       <main class="multiplayer-layout">
@@ -240,7 +261,7 @@
               <label class="mode-field" for="mp-ai-${index}">
                 <span>${["AI 1", "AI 2", "AI 3"][index - 1]}</span>
                 <select id="mp-ai-${index}" ${isHost ? "" : "disabled"}>
-                  ${ALL_AI_TYPES.map((type) => `<option value="${type}" ${type === (state.aiTypes[index - 1] || "Balanced") ? "selected" : ""}>${type}</option>`).join("")}
+                  ${ALL_AI_TYPES.map((type) => `<option value="${type}" ${type === (aiTypes[index - 1] || "Balanced") ? "selected" : ""}>${type}</option>`).join("")}
                 </select>
               </label>
             `).join("")}
@@ -348,11 +369,18 @@
 
   function renderResult() {
     const result = store.state.puzzleResult;
+    const isHost = store.state.hostId === store.state.viewerId;
     return `
       <div class="panel-head"><div><h2>Puzzle Complete</h2><div class="panel-subtitle">Answer ${result.answer} / ${result.roundsUsed} rounds</div></div></div>
       <div class="rank-list">
         ${result.ranks.map((rank) => `<div class="rank-row"><strong>${rank.tied ? `Tie #${rank.rank}` : `#${rank.rank}`} ${escapeHtml(rank.name)}</strong><span>R${rank.finishRound} / +${rank.points}</span></div>`).join("")}
       </div>
+      ${isHost ? `
+        <div class="action-buttons">
+          <button class="primary" data-action="new-game">New Game</button>
+          <button class="quiet" data-action="back-to-lobby">Back to Lobby</button>
+        </div>
+      ` : `<div class="mp-wait">Waiting for host.</div>`}
       ${renderPrivateLog()}
     `;
   }

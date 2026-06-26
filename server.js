@@ -188,12 +188,57 @@ function startGame(room, player, config) {
   const humanCount = room.players.filter((item) => item.type === "human").length;
   room.playerCount = clamp(Number(config.playerCount) || room.playerCount, Math.max(2, humanCount), 4);
   room.aiTypes = Array.isArray(config.aiTypes) ? config.aiTypes.slice(0, 3) : room.aiTypes;
+  room.players = room.players.filter((item) => item.type === "human");
   while (room.players.length < room.playerCount) {
     const seat = room.players.length;
     room.players.push(createAi(seat, AI_NAMES[seat - 1] || `AI ${seat}`, room.aiTypes[seat - 1] || AI_TYPES[seat - 1] || "Balanced"));
   }
   room.players.sort((left, right) => left.seat - right.seat);
   startPuzzle(room);
+  return {};
+}
+
+function newGame(room, player) {
+  if (room.hostId !== player.id) return { error: "Only host can start a new game" };
+  if (room.phase !== "ended") return { error: "Game is not finished yet" };
+  room.players.forEach((item) => {
+    item.score = 0;
+  });
+  startPuzzle(room);
+  return {};
+}
+
+function backToLobby(room, player) {
+  if (room.hostId !== player.id) return { error: "Only host can return to lobby" };
+  const humans = room.players.filter((item) => item.type === "human");
+  room.players = humans
+    .sort((left, right) => left.seat - right.seat)
+    .map((item, index) => {
+      item.seat = index;
+      item.score = 0;
+      item.book = [];
+      item.candidate = new Set(ALL_SEQUENCES);
+      item.skipNext = false;
+      item.ranked = false;
+      item.rank = null;
+      item.finishRound = null;
+      item.tied = false;
+      item.lastAction = "Ready";
+      item.privateLog = [];
+      item.tableChecks = 0;
+      return item;
+    });
+  room.playerCount = clamp(Math.max(2, room.players.length), 2, 4);
+  room.phase = "lobby";
+  room.roundNumber = 0;
+  room.answer = "";
+  room.ranks = [];
+  room.publicEliminated = new Set();
+  room.publicSignals = [];
+  room.pendingActions = new Map();
+  room.snapshotBooks = new Map();
+  room.puzzleResult = null;
+  room.publicFeed = ["Returned to lobby."];
   return {};
 }
 
@@ -720,6 +765,26 @@ const server = http.createServer(async (req, res) => {
       const auth = authRoom(startMatch[1], body.playerId, body.token);
       if (auth.error) return sendJson(res, 401, auth);
       const result = startGame(auth.room, auth.player, body);
+      if (result.error) return sendJson(res, 400, result);
+      broadcast(auth.room);
+      return sendJson(res, 200, { ok: true });
+    }
+    const newGameMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9]{4})\/new-game$/);
+    if (req.method === "POST" && newGameMatch) {
+      const body = await readBody(req);
+      const auth = authRoom(newGameMatch[1], body.playerId, body.token);
+      if (auth.error) return sendJson(res, 401, auth);
+      const result = newGame(auth.room, auth.player);
+      if (result.error) return sendJson(res, 400, result);
+      broadcast(auth.room);
+      return sendJson(res, 200, { ok: true });
+    }
+    const lobbyMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9]{4})\/lobby$/);
+    if (req.method === "POST" && lobbyMatch) {
+      const body = await readBody(req);
+      const auth = authRoom(lobbyMatch[1], body.playerId, body.token);
+      if (auth.error) return sendJson(res, 401, auth);
+      const result = backToLobby(auth.room, auth.player);
       if (result.error) return sendJson(res, 400, result);
       broadcast(auth.room);
       return sendJson(res, 200, { ok: true });

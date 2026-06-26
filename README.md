@@ -34,6 +34,8 @@ The Node server opens the multiplayer prototype at `/`. The solo prototype is st
 
 The multiplayer prototype is X=4 only. It supports room codes, 2-4 seats, human joins, and AI-filled empty seats. The server owns the hidden answer, verification results, private candidate books, and AI turns.
 
+After a multiplayer puzzle ends, the host can start a new game with the same seats or return everyone to the same lobby code to change seat count and AI fill.
+
 ## Game Modes
 
 - Players: 2 to 4
