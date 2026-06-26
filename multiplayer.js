@@ -14,9 +14,11 @@
     selectedAction: "add",
     selected: new Set(),
     selectedGuess: null,
+    lowLikely: new Set(),
     error: "",
   };
 
+  store.lowLikely = loadLowLikely();
   app.addEventListener("click", handleClick);
   app.addEventListener("change", handleChange);
   connectIfReady();
@@ -40,6 +42,7 @@
     localStorage.setItem("st_room", store.code);
     localStorage.setItem("st_player", store.playerId);
     localStorage.setItem("st_token", store.token);
+    store.lowLikely = loadLowLikely();
     connectIfReady(true);
   }
 
@@ -81,7 +84,7 @@
         localStorage.removeItem("st_room");
         localStorage.removeItem("st_player");
         localStorage.removeItem("st_token");
-        Object.assign(store, { code: "", playerId: "", token: "", state: null, source: null });
+        Object.assign(store, { code: "", playerId: "", token: "", state: null, source: null, lowLikely: new Set() });
         render();
         return;
       }
@@ -117,6 +120,11 @@
         render();
         return;
       }
+      if (action === "toggle-lowlikely" && seq) {
+        toggleLowLikely(seq);
+        render();
+        return;
+      }
       if (action === "quick-fill") {
         quickFill(false);
         render();
@@ -124,6 +132,16 @@
       }
       if (action === "quick-fill-table") {
         quickFill(true);
+        render();
+        return;
+      }
+      if (action === "select-all-verify") {
+        selectAllVerify();
+        render();
+        return;
+      }
+      if (action === "deselect-all-verify") {
+        store.selected = new Set();
         render();
         return;
       }
@@ -166,14 +184,53 @@
   function quickFill(uncoveredOnly) {
     const state = store.state;
     const table = currentTableSet();
-    const addable = state.viewer.candidate
-      .filter((seq) => !state.viewer.book.includes(seq))
+    const addable = sortAddableForChoice(state.viewer.candidate.filter((seq) => !state.viewer.book.includes(seq)))
       .filter((seq) => !store.selected.has(seq))
       .filter((seq) => !uncoveredOnly || !table.has(seq));
-    while (store.selected.size < state.addAmount && addable.length > 0) {
-      const index = Math.floor(Math.random() * addable.length);
-      store.selected.add(addable.splice(index, 1)[0]);
+    const pools = [
+      addable.filter((seq) => !store.lowLikely.has(seq)),
+      addable.filter((seq) => store.lowLikely.has(seq)),
+    ];
+    pools.forEach((pool) => {
+      while (store.selected.size < state.addAmount && pool.length > 0) {
+        const index = Math.floor(Math.random() * pool.length);
+        store.selected.add(pool.splice(index, 1)[0]);
+      }
+    });
+  }
+
+  function toggleLowLikely(seq) {
+    if (store.lowLikely.has(seq)) store.lowLikely.delete(seq);
+    else store.lowLikely.add(seq);
+    saveLowLikely();
+  }
+
+  function selectAllVerify() {
+    const candidateSet = new Set(store.state.viewer.candidate);
+    store.state.viewer.book
+      .filter((seq) => candidateSet.has(seq))
+      .forEach((seq) => store.selected.add(seq));
+  }
+
+  function loadLowLikely() {
+    const key = lowLikelyStorageKey();
+    if (!key) return new Set();
+    try {
+      return new Set(JSON.parse(localStorage.getItem(key) || "[]"));
+    } catch {
+      return new Set();
     }
+  }
+
+  function saveLowLikely() {
+    const key = lowLikelyStorageKey();
+    if (!key) return;
+    localStorage.setItem(key, JSON.stringify([...store.lowLikely]));
+  }
+
+  function lowLikelyStorageKey() {
+    if (!store.code || !store.playerId) return "";
+    return `st_low_likely_${store.code}_${store.playerId}`;
   }
 
   async function submitAction() {
@@ -279,7 +336,7 @@
       <section class="status-strip">
         <div class="status-item"><div class="label">Room</div><div class="value">${state.code}</div></div>
         <div class="status-item"><div class="label">Round</div><div class="value">${state.roundNumber}</div></div>
-        <div class="status-item"><div class="label">Candidates</div><div class="value">${state.viewer.candidate.length} / 24</div></div>
+        <div class="status-item"><div class="label">Candidates</div><div class="value">${state.viewer.candidate.length} / ${state.allSequences.length}</div></div>
         <div class="status-item"><div class="label">Status</div><div class="value">${state.viewer.ranked ? `#${state.viewer.rank}` : state.viewer.pending ? "Submitted" : "Choose"}</div></div>
       </section>
       <main class="multiplayer-layout">
@@ -307,15 +364,17 @@
   }
 
   function renderPlayer(player) {
+    const isViewer = player.id === store.state.viewerId;
+    const bookPreview = isViewer ? sortOwnBookForSelection(player.book).slice(0, 20) : player.book.slice(-20);
     return `
-      <div class="player-panel ${player.id === store.state.viewerId ? "is-human" : ""} ${player.ranked ? "is-ranked" : ""}">
+      <div class="player-panel ${isViewer ? "is-human" : ""} ${player.ranked ? "is-ranked" : ""}">
         <div class="player-head"><div><div class="player-name">${escapeHtml(player.name)}</div><span class="badge">${escapeHtml(player.personality)}</span></div><div class="score">${player.score}</div></div>
         <div class="player-meta">
           <div class="mini-stat"><strong>${player.book.length}</strong><span>Book</span></div>
           <div class="mini-stat"><strong>${player.ranked ? `${player.tied ? "Tie " : ""}#${player.rank}` : player.skipNext ? "Skip" : "Live"}</strong><span>Status</span></div>
           <div class="mini-stat"><strong>${escapeHtml(player.lastAction)}</strong><span>Action</span></div>
         </div>
-        <div class="book-preview">${player.book.slice(-20).map((seq) => `<span class="seq-chip bright">${seq}</span>`).join("") || `<span class="badge">Empty</span>`}</div>
+        <div class="book-preview">${bookPreview.map((seq) => renderPreviewChip(seq, isViewer)).join("") || `<span class="badge">Empty</span>`}</div>
       </div>
     `;
   }
@@ -342,21 +401,40 @@
     const state = store.state;
     const table = currentTableSet();
     let sequences = [];
+    let tools = "";
     if (store.selectedAction === "add") {
-      sequences = state.viewer.candidate
-        .filter((seq) => !state.viewer.book.includes(seq))
-        .sort((left, right) => Number(table.has(left)) - Number(table.has(right)));
+      sequences = sortAddableForChoice(state.viewer.candidate.filter((seq) => !state.viewer.book.includes(seq)));
+      const uncovered = sequences.filter((seq) => !table.has(seq)).length;
+      const covered = sequences.length - uncovered;
+      tools = `
+        <div class="book-tools">
+          <button class="accent" data-action="quick-fill">Quick Fill</button>
+          <button class="accent" data-action="quick-fill-table">Fill Not On Table</button>
+        </div>
+        <div class="book-tools compact-tools">
+          <span class="badge">${uncovered} not on table</span>
+          <span class="badge">${covered} already on table</span>
+          <span class="badge">${store.lowLikely.size} low likely</span>
+        </div>
+      `;
     } else if (store.selectedAction === "verifyMine") {
-      sequences = state.viewer.book.filter((seq) => state.viewer.candidate.includes(seq));
+      sequences = sortOwnBookForSelection(state.viewer.book);
+      tools = `
+        <div class="book-tools">
+          <button class="accent" data-action="select-all-verify">Select All</button>
+          <button class="quiet" data-action="deselect-all-verify">Deselect All</button>
+        </div>
+      `;
     } else {
-      sequences = state.viewer.candidate;
+      sequences = sortCandidatesForChoice(state.viewer.candidate);
     }
     return `
-      ${store.selectedAction === "add" ? `<div class="book-tools"><button class="accent" data-action="quick-fill">Quick Fill</button><button class="accent" data-action="quick-fill-table">Fill Not On Table</button></div>` : ""}
+      ${tools}
       <div class="mp-seq-grid">
         ${sequences.map((seq) => {
           const selected = store.selectedAction === "submit" ? store.selectedGuess === seq : store.selected.has(seq);
-          return `<button class="seq-chip bright selectable ${selected ? "selected" : ""}" data-action="toggle-seq" data-seq="${seq}">${seq}</button>`;
+          const disabled = store.selectedAction === "verifyMine" && !state.viewer.candidate.includes(seq);
+          return renderSequenceCell(seq, selected, disabled);
         }).join("") || `<div class="empty-note">No available sequences.</div>`}
       </div>
       <button class="primary" data-action="submit-action">Submit ${actionLabel(store.selectedAction)}</button>
@@ -389,6 +467,65 @@
     const set = new Set();
     store.state.players.forEach((player) => player.book.forEach((seq) => set.add(seq)));
     return set;
+  }
+
+  function renderSequenceCell(seq, selected, disabled = false) {
+    const lowLikely = store.lowLikely.has(seq);
+    const tableCovered = currentTableSet().has(seq);
+    const chipClasses = disabled ? "grey disabled" : "bright selectable";
+    const actionAttr = disabled ? "" : `data-action="toggle-seq" data-seq="${seq}"`;
+    const disabledAttr = disabled ? "disabled" : "";
+    return `
+      <div class="seq-cell ${lowLikely ? "is-lowlikely" : ""} ${tableCovered ? "is-covered" : "is-uncovered"}">
+        <button class="seq-chip ${chipClasses} ${selected ? "selected" : ""}" ${actionAttr} ${disabledAttr}>${escapeHtml(seq)}</button>
+        ${disabled ? "" : `<button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}" title="Toggle low likely" aria-label="Toggle low likely ${seq}">L</button>`}
+      </div>
+    `;
+  }
+
+  function renderPreviewChip(seq, isViewer) {
+    const candidateSet = new Set(store.state.viewer.candidate);
+    const live = !isViewer || candidateSet.has(seq);
+    const lowLikely = isViewer && store.lowLikely.has(seq);
+    return `<span class="seq-chip ${live ? "bright" : "grey"} ${lowLikely ? "lowlikely-chip" : ""}">${escapeHtml(seq)}</span>`;
+  }
+
+  function sortOwnBookForSelection(book) {
+    const candidateSet = new Set(store.state.viewer.candidate);
+    return [...book].sort((left, right) => {
+      const leftLive = candidateSet.has(left) ? 0 : 1;
+      const rightLive = candidateSet.has(right) ? 0 : 1;
+      if (leftLive !== rightLive) return leftLive - rightLive;
+      const lowCompare = compareLowLikely(left, right);
+      if (lowCompare) return lowCompare;
+      return book.indexOf(left) - book.indexOf(right);
+    });
+  }
+
+  function sortAddableForChoice(sequences) {
+    const tableSet = currentTableSet();
+    return [...sequences].sort((left, right) => {
+      const lowCompare = compareLowLikely(left, right);
+      if (lowCompare) return lowCompare;
+      const leftCovered = tableSet.has(left) ? 1 : 0;
+      const rightCovered = tableSet.has(right) ? 1 : 0;
+      if (leftCovered !== rightCovered) return leftCovered - rightCovered;
+      return sequenceIndex(left) - sequenceIndex(right);
+    });
+  }
+
+  function sortCandidatesForChoice(sequences) {
+    return [...sequences].sort((left, right) => compareLowLikely(left, right) || sequenceIndex(left) - sequenceIndex(right));
+  }
+
+  function compareLowLikely(left, right) {
+    const leftLow = store.lowLikely.has(left) ? 1 : 0;
+    const rightLow = store.lowLikely.has(right) ? 1 : 0;
+    return leftLow - rightLow;
+  }
+
+  function sequenceIndex(seq) {
+    return store.state.allSequences.indexOf(seq);
   }
 
   function renderAnswerMask() {

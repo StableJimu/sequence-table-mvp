@@ -44,6 +44,16 @@
   margin-top: 12px;
 }
 
+.mp-seq-grid .empty-note {
+  grid-column: 1 / -1;
+}
+
+.seq-chip.lowlikely-chip {
+  border-color: rgba(185, 177, 164, 0.36);
+  background: #272a24;
+  color: #bfc9b6;
+}
+
 .mp-action-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
