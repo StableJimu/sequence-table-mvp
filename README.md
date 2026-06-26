@@ -65,6 +65,12 @@ Each turn, the AI scores possible actions:
 
 The AI chooses between scored actions with a softmax, so higher-value actions are more likely but not perfectly deterministic.
 
+Current AI seats can be configured on the start screen:
+
+- Balanced, Aggressive, and Cautious use the original value-scored heuristic.
+- Binary is a benchmark strategy that adds toward a half split, then verifies its own book.
+- Reader uses a first-pass public inference layer. It watches public table-check and self-check patterns, then biases its adds, verifies, and submits toward what opponent behavior seems to imply.
+
 ## AI Tuning
 
 The AI is not trained live in the browser. Its action values were tuned with lightweight self-play simulation.

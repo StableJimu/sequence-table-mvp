@@ -2,7 +2,7 @@
   "use strict";
 
   const DEFAULT_COMMIT_TIME = 30;
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 24;
   const ADD_BY_LENGTH = { 3: 2, 4: 3, 5: 10 };
   const SCORE_BY_PLAYERS = {
     2: [5, 0],
@@ -25,11 +25,14 @@
   const AI_SUBMIT_THRESHOLDS = {
     Aggressive: 4,
     Balanced: 3,
+    Reader: 3,
     Cautious: 2,
+    Binary: 2,
   };
   const AI_FINISH_ROUND_LIMIT_MULTIPLIER = 20;
   const AI_NAMES = ["Mina", "Sol", "Beck"];
-  const AI_PERSONALITIES = ["Balanced", "Cautious", "Aggressive"];
+  const DEFAULT_AI_TYPES = ["Reader", "Binary", "Balanced"];
+  const AI_TYPE_OPTIONS = ["Balanced", "Reader", "Binary", "Aggressive", "Cautious"];
 
   let allSequences = [];
   const app = document.getElementById("app");
@@ -42,6 +45,7 @@
       sequenceLength: 4,
       target: 15,
       sound: true,
+      aiTypes: [...DEFAULT_AI_TYPES],
     },
     players: [],
     answer: "",
@@ -53,6 +57,7 @@
     actionStartedAt: 0,
     snapshotBooks: new Map(),
     pendingActions: new Map(),
+    publicSignals: [],
     publicFeed: [],
     puzzleResult: null,
     gameWinner: null,
@@ -110,7 +115,7 @@
       createPlayer("p0", "You", "human", "Human"),
     ];
     for (let index = 1; index < count; index += 1) {
-      players.push(createPlayer(`p${index}`, AI_NAMES[index - 1], "ai", AI_PERSONALITIES[index - 1]));
+      players.push(createPlayer(`p${index}`, AI_NAMES[index - 1], "ai", state.config.aiTypes[index - 1] || DEFAULT_AI_TYPES[index - 1]));
     }
     return players;
   }
@@ -127,6 +132,8 @@
       skipNext: false,
       ranked: false,
       rank: null,
+      finishRound: null,
+      tied: false,
       lastAction: "Ready",
       privateLog: [],
       tableChecks: 0,
@@ -141,6 +148,7 @@
     state.publicEliminated = new Set();
     state.pendingActions = new Map();
     state.snapshotBooks = new Map();
+    state.publicSignals = [];
     state.puzzleResult = null;
     state.gameWinner = null;
     state.lowLikely = new Set();
@@ -155,6 +163,8 @@
       player.skipNext = false;
       player.ranked = false;
       player.rank = null;
+      player.finishRound = null;
+      player.tied = false;
       player.lastAction = "Ready";
       player.privateLog = [];
       player.tableChecks = 0;
@@ -238,6 +248,12 @@
   }
 
   function chooseAiAction(player) {
+    if (player.personality === "Binary") return chooseBinaryAiAction(player);
+    if (player.personality === "Reader") return chooseReaderAiAction(player);
+    return chooseHeuristicAiAction(player);
+  }
+
+  function chooseHeuristicAiAction(player) {
     const candidateList = sequencesFromSet(player.candidate);
     const candidateCount = candidateList.length;
     const addAmount = currentAddAmount();
@@ -326,11 +342,261 @@
     return choice;
   }
 
+  function chooseBinaryAiAction(player) {
+    const candidateList = sequencesFromSet(player.candidate);
+    const candidateCount = candidateList.length;
+    const addAmount = currentAddAmount();
+    const ownLive = player.book.filter((seq) => player.candidate.has(seq));
+    const addable = candidateList.filter((seq) => !player.book.includes(seq));
+
+    if (candidateCount <= 1) {
+      addPrivateLog(player, `${roundLabel()}: binary C=${candidateCount}; forced Submit.`);
+      return {
+        type: "submit",
+        guess: candidateList[0],
+        commitTime: randomInt(3, 26),
+        committed: true,
+      };
+    }
+
+    if (candidateCount <= AI_SUBMIT_THRESHOLDS.Binary) {
+      addPrivateLog(player, `${roundLabel()}: binary C=${candidateCount}; Submit threshold.`);
+      return {
+        type: "submit",
+        guess: sampleOne(candidateList),
+        commitTime: randomInt(3, 26),
+        committed: true,
+      };
+    }
+
+    const target = Math.max(1, Math.floor(candidateCount / 2));
+    if (ownLive.length > 0 && (ownLive.length >= Math.ceil(target * 0.75) || addable.length === 0)) {
+      const selection = chooseClosestHalfSelection(ownLive, candidateCount);
+      addPrivateLog(player, `${roundLabel()}: binary C=${candidateCount}, own=${ownLive.length}; Verify Mine(${selection.length}).`);
+      return {
+        type: "verifyMine",
+        selection,
+        committed: true,
+      };
+    }
+
+    if (addable.length > 0) {
+      const addCount = Math.min(addAmount, addable.length, Math.max(1, target - ownLive.length));
+      const sequences = chooseBinaryAddSequences(addable, addCount);
+      addPrivateLog(player, `${roundLabel()}: binary C=${candidateCount}, own=${ownLive.length}; Add(${sequences.length}) toward half.`);
+      return {
+        type: "add",
+        sequences,
+        committed: true,
+      };
+    }
+
+    const tableSet = getSnapshotTableSet();
+    const tableLive = [...tableSet].filter((seq) => player.candidate.has(seq));
+    if (tableLive.length > 0 && tableLive.length < candidateCount) {
+      player.tableChecks += 1;
+      addPrivateLog(player, `${roundLabel()}: binary fallback Verify Table(${tableLive.length}).`);
+      return {
+        type: "verifyTable",
+        committed: true,
+      };
+    }
+
+    addPrivateLog(player, `${roundLabel()}: binary fallback Submit; ${candidateCount} candidates.`);
+    return {
+      type: "submit",
+      guess: sampleOne(candidateList),
+      commitTime: randomInt(3, 26),
+      committed: true,
+    };
+  }
+
+  function chooseReaderAiAction(player) {
+    const candidateList = sequencesFromSet(player.candidate);
+    const candidateCount = candidateList.length;
+    const addAmount = currentAddAmount();
+    const ownLive = player.book.filter((seq) => player.candidate.has(seq));
+    const publicWeights = buildPublicInferenceWeights(player, candidateList);
+    const options = [];
+
+    if (candidateCount <= 1) {
+      addPrivateLog(player, `${roundLabel()}: reader forced Submit; 1 candidate left.`);
+      return {
+        type: "submit",
+        guess: candidateList[0],
+        commitTime: randomInt(3, 26),
+        committed: true,
+      };
+    }
+
+    const submitThreshold = AI_SUBMIT_THRESHOLDS.Reader;
+    const pressure = publicPressure(publicWeights, candidateCount);
+    if (candidateCount <= submitThreshold || pressure > 0.58) {
+      options.push({
+        action: {
+          type: "submit",
+          guess: chooseWeightedCandidate(candidateList, publicWeights),
+          commitTime: randomInt(3, 26),
+          committed: true,
+        },
+        value: scoreAiSubmit(candidateCount, submitThreshold) + pressure * 4,
+      });
+    }
+
+    const verifySelection = chooseReaderVerifySelection(ownLive, candidateCount, publicWeights);
+    if (verifySelection.length > 0 && verifySelection.length < candidateCount) {
+      options.push({
+        action: {
+          type: "verifyMine",
+          selection: verifySelection,
+          committed: true,
+        },
+        value: scoreAiVerifyOwn(verifySelection.length, candidateCount) + averageWeight(verifySelection, publicWeights) * 0.6,
+      });
+    }
+
+    const tableSet = getSnapshotTableSet();
+    const tableLive = [...tableSet].filter((seq) => player.candidate.has(seq));
+    const tableValue = scoreAiVerifyTable(tableLive.length, candidateCount, addAmount);
+    if (tableValue > 0 && tableLive.length > 0 && tableLive.length < candidateCount) {
+      options.push({
+        action: {
+          type: "verifyTable",
+          committed: true,
+        },
+        value: tableValue + pressure,
+      });
+    }
+
+    const addable = candidateList.filter((seq) => !player.book.includes(seq));
+    if (addable.length > 0) {
+      const addCount = Math.min(addAmount, addable.length);
+      const sequences = chooseReaderAddSequences(addable, addCount, publicWeights);
+      options.push({
+        action: {
+          type: "add",
+          sequences,
+          committed: true,
+        },
+        value: scoreAiAdd(addCount, addable.length, addAmount) + (1 - pressure) * 1.2,
+      });
+    }
+
+    if (options.length === 0) {
+      addPrivateLog(player, `${roundLabel()}: reader fallback Submit; ${candidateCount} candidates.`);
+      return {
+        type: "submit",
+        guess: chooseWeightedCandidate(candidateList, publicWeights),
+        commitTime: randomInt(3, 26),
+        committed: true,
+      };
+    }
+
+    const choice = chooseSoftmaxOption(options, aiSoftmaxTemperature(candidateCount));
+    addPrivateLog(
+      player,
+      `${roundLabel()}: reader C=${candidateCount}, own=${ownLive.length}, pressure=${pressure.toFixed(2)}; ${formatAiDecisionOptions(options)} -> ${actionTitle(choice.type)}.`,
+    );
+    logTopPublicRead(player, publicWeights);
+    if (choice.type === "verifyTable") {
+      player.tableChecks += 1;
+    }
+    return choice;
+  }
+
   function chooseAiVerifySelection(ownLive, candidateCount) {
     if (ownLive.length === 0 || candidateCount <= 1) return [];
     const targetSize = Math.max(1, Math.floor(candidateCount / 2));
     if (ownLive.length <= targetSize) return [...ownLive];
     return sampleMany(ownLive, targetSize);
+  }
+
+  function chooseClosestHalfSelection(ownLive, candidateCount) {
+    if (ownLive.length === 0) return [];
+    const targetSize = Math.max(1, Math.floor(candidateCount / 2));
+    if (ownLive.length <= targetSize) return [...ownLive];
+    return sampleMany(ownLive, targetSize);
+  }
+
+  function chooseBinaryAddSequences(addable, count) {
+    const tableSet = getCurrentTableSet();
+    return [...addable]
+      .sort((left, right) => {
+        const leftCovered = tableSet.has(left) ? 1 : 0;
+        const rightCovered = tableSet.has(right) ? 1 : 0;
+        if (leftCovered !== rightCovered) return leftCovered - rightCovered;
+        return allSequences.indexOf(left) - allSequences.indexOf(right);
+      })
+      .slice(0, count);
+  }
+
+  function chooseReaderVerifySelection(ownLive, candidateCount, weights) {
+    if (ownLive.length === 0 || candidateCount <= 1) return [];
+    const targetSize = Math.max(1, Math.floor(candidateCount / 2));
+    const sorted = [...ownLive].sort((left, right) => (weights.get(right) || 0) - (weights.get(left) || 0));
+    return sorted.slice(0, Math.min(targetSize, sorted.length));
+  }
+
+  function chooseReaderAddSequences(addable, count, weights) {
+    const tableSet = getCurrentTableSet();
+    return [...addable]
+      .sort((left, right) => {
+        const leftCovered = tableSet.has(left) ? 1 : 0;
+        const rightCovered = tableSet.has(right) ? 1 : 0;
+        if (leftCovered !== rightCovered) return leftCovered - rightCovered;
+        const leftWeight = weights.get(left) || 0;
+        const rightWeight = weights.get(right) || 0;
+        if (leftWeight !== rightWeight) return leftWeight - rightWeight;
+        return allSequences.indexOf(left) - allSequences.indexOf(right);
+      })
+      .slice(0, count);
+  }
+
+  function buildPublicInferenceWeights(player, candidateList) {
+    const weights = new Map(candidateList.map((seq) => [seq, 0]));
+    state.publicSignals
+      .filter((signal) => signal.playerId !== player.id)
+      .forEach((signal) => {
+        const noAddAfter = signal.addsAfter === 0;
+        const selfCheckAfter = signal.selfChecksAfter > 0;
+        const confidence = noAddAfter && selfCheckAfter ? 2.6 : noAddAfter ? 1.2 : Math.max(0.25, 0.9 - signal.addsAfter * 0.18);
+        signal.tableSet.forEach((seq) => {
+          if (weights.has(seq)) {
+            weights.set(seq, weights.get(seq) + confidence);
+          }
+        });
+      });
+    return weights;
+  }
+
+  function publicPressure(weights, candidateCount) {
+    if (candidateCount <= 0 || weights.size === 0) return 0;
+    const values = [...weights.values()];
+    const maxWeight = Math.max(...values);
+    const totalWeight = values.reduce((sum, value) => sum + value, 0);
+    if (totalWeight <= 0) return 0;
+    return clamp(maxWeight / totalWeight * Math.sqrt(candidateCount), 0, 1);
+  }
+
+  function chooseWeightedCandidate(candidates, weights) {
+    const maxWeight = Math.max(0, ...candidates.map((seq) => weights.get(seq) || 0));
+    if (maxWeight <= 0) return sampleOne(candidates);
+    const top = candidates.filter((seq) => (weights.get(seq) || 0) >= maxWeight);
+    return sampleOne(top);
+  }
+
+  function averageWeight(sequences, weights) {
+    if (sequences.length === 0) return 0;
+    return sequences.reduce((sum, seq) => sum + (weights.get(seq) || 0), 0) / sequences.length;
+  }
+
+  function logTopPublicRead(player, weights) {
+    const top = [...weights.entries()]
+      .filter(([, value]) => value > 0)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 3);
+    if (top.length === 0) return;
+    addPrivateLog(player, `${roundLabel()}: public read favors ${top.map(([seq, value]) => `${seq}:${value.toFixed(1)}`).join(", ")}.`);
   }
 
   function scoreAiAdd(addCount, addableCount, addAmount) {
@@ -496,6 +762,8 @@
       }
     });
 
+    recordPublicRoundSignals(tableSet, addBatches);
+
     unique(publicWrong).forEach((seq) => {
       state.publicEliminated.add(seq);
       state.players.forEach((player) => {
@@ -515,9 +783,7 @@
       });
     });
 
-    correctSubmissions
-      .sort((a, b) => a.commitTime - b.commitTime || playerSeatIndex(a.player.id) - playerSeatIndex(b.player.id))
-      .forEach(({ player }) => assignRank(player));
+    assignTieRank(correctSubmissions.map(({ player }) => player));
 
     state.publicFeed = [...feed, ...state.publicFeed].slice(0, 8);
 
@@ -580,12 +846,62 @@
     }
   }
 
+  function recordPublicRoundSignals(tableSet, addBatches) {
+    const addSizes = new Map(addBatches.map(({ player, sequences }) => [player.id, sequences.length]));
+    state.players.forEach((player) => {
+      const action = state.pendingActions.get(player.id);
+      if (!action || action.type === "ranked" || action.type === "skip") return;
+
+      if (action.type === "add") {
+        const amount = addSizes.get(player.id) || 0;
+        state.publicSignals
+          .filter((signal) => signal.playerId === player.id)
+          .forEach((signal) => {
+            signal.addsAfter += amount;
+          });
+      }
+
+      if (action.type === "verifyMine") {
+        state.publicSignals
+          .filter((signal) => signal.playerId === player.id)
+          .forEach((signal) => {
+            signal.selfChecksAfter += 1;
+          });
+      }
+
+      if (action.type === "verifyTable") {
+        state.publicSignals.push({
+          playerId: player.id,
+          playerName: player.name,
+          round: state.roundNumber,
+          tableSet: new Set(tableSet),
+          addsAfter: 0,
+          selfChecksAfter: 0,
+        });
+      }
+    });
+  }
+
   function assignRank(player) {
-    if (player.ranked) return;
-    player.ranked = true;
-    player.rank = state.ranks.length + 1;
-    player.lastAction = `Rank ${player.rank}`;
-    state.ranks.push(player.id);
+    assignTieRank([player]);
+  }
+
+  function assignTieRank(players) {
+    const finishing = players.filter((player) => player && !player.ranked);
+    if (finishing.length === 0) return;
+    const rank = state.ranks.length + 1;
+    const tied = finishing.length > 1;
+    finishing
+      .sort((left, right) => playerSeatIndex(left.id) - playerSeatIndex(right.id))
+      .forEach((player) => {
+        player.ranked = true;
+        player.rank = rank;
+        player.finishRound = state.roundNumber;
+        player.tied = tied;
+        player.lastAction = tied ? `Rank ${rank} Tie` : `Rank ${rank}`;
+        state.ranks.push(player.id);
+        addPrivateLog(player, `${roundLabel()}: finished rank ${rank}${tied ? " tie" : ""}.`);
+      });
   }
 
   function autoResolveRemainingPlayers() {
@@ -608,6 +924,7 @@
       const publicWrong = [];
       const addBatches = [];
       const correctSubmissions = [];
+      state.pendingActions = new Map();
 
       state.players.forEach((player) => {
         if (player.type !== "ai" || player.ranked) return;
@@ -615,6 +932,7 @@
         if (player.skipNext) {
           player.skipNext = false;
           player.lastAction = "Skipped";
+          state.pendingActions.set(player.id, { type: "skip" });
           addPrivateLog(player, `${roundLabel()}: skipped during AI finish.`);
           feed.push(`${player.name} skipped.`);
           return;
@@ -622,6 +940,7 @@
 
         const action = chooseAiAction(player);
         player.lastAction = actionTitle(action.type);
+        state.pendingActions.set(player.id, action);
 
         if (action.type === "add") {
           const sequences = unique(action.sequences || []).filter((seq) => allSequences.includes(seq));
@@ -661,6 +980,8 @@
         }
       });
 
+      recordPublicRoundSignals(tableSet, addBatches);
+
       unique(publicWrong).forEach((seq) => {
         state.publicEliminated.add(seq);
         state.players.forEach((player) => {
@@ -680,9 +1001,7 @@
         });
       });
 
-      correctSubmissions
-        .sort((a, b) => a.commitTime - b.commitTime || playerSeatIndex(a.player.id) - playerSeatIndex(b.player.id))
-        .forEach(({ player }) => assignRank(player));
+      assignTieRank(correctSubmissions.map(({ player }) => player));
 
       state.publicFeed = [...feed, ...state.publicFeed].slice(0, 8);
     }
@@ -704,6 +1023,7 @@
       forcedRounds += 1;
       state.roundNumber += 1;
       const feed = [];
+      const forcedWinners = [];
 
       players.forEach((player) => {
         if (player.ranked) return;
@@ -724,7 +1044,7 @@
           addPrivateLog(player, `${roundLabel()}: decision exact finish C=${player.candidate.size}; Submit=forced -> Submit.`);
           addPrivateLog(player, `${roundLabel()}: submitted ${guess} correctly during exact endgame search.`);
           feed.push(`${player.name} submitted correctly.`);
-          assignRank(player);
+          forcedWinners.push(player);
           return;
         }
 
@@ -750,18 +1070,19 @@
         applyVerification(player, selection, "Verify Mine", feed);
       });
 
+      assignTieRank(forcedWinners);
       state.publicFeed = [...feed, ...state.publicFeed].slice(0, 8);
     }
 
-    players
-      .filter((player) => !player.ranked)
+    const unresolved = players.filter((player) => !player.ranked);
+    unresolved
       .forEach((player) => {
         player.candidate = new Set([state.answer]);
         player.lastAction = "Submit";
         addPrivateLog(player, `${roundLabel()}: exact endgame search hit guardrail; answer kept as only candidate.`);
         addPrivateLog(player, `${roundLabel()}: submitted ${state.answer} correctly during exact endgame search.`);
-        assignRank(player);
       });
+    assignTieRank(unresolved);
   }
 
   function aiResolveScore(player) {
@@ -772,25 +1093,38 @@
 
   function endPuzzle(reason) {
     const scoring = SCORE_BY_PLAYERS[state.players.length];
-    const resultRanks = state.ranks.map((playerId, index) => {
-      const player = state.players.find((candidate) => candidate.id === playerId);
-      const points = scoring[index] || 0;
-      player.score += points;
-      return {
-        playerId,
-        name: player.name,
-        points,
-        rank: index + 1,
-      };
-    });
+    const rankedPlayers = state.ranks.map((playerId) => state.players.find((candidate) => candidate.id === playerId));
+    const resultRanks = [];
+    let cursor = 0;
+
+    while (cursor < rankedPlayers.length) {
+      const group = rankedPlayers.filter((player) => player.rank === rankedPlayers[cursor].rank);
+      const points = group.length === state.players.length
+        ? 2
+        : Math.floor(group.reduce((sum, _player, index) => sum + (scoring[rankedPlayers[cursor].rank - 1 + index] || 0), 0) / group.length + 0.5);
+      group.forEach((player) => {
+        player.score += points;
+        resultRanks.push({
+          playerId: player.id,
+          name: player.name,
+          points,
+          rank: player.rank,
+          tied: group.length > 1,
+          finishRound: player.finishRound,
+        });
+      });
+      cursor += group.length;
+    }
 
     const topScore = Math.max(...state.players.map((player) => player.score));
     state.gameWinner = topScore >= state.config.target
       ? state.players.find((player) => player.score === topScore)
       : null;
+    const roundsUsed = Math.max(...state.players.map((player) => player.finishRound || 0));
     state.puzzleResult = {
       reason,
       answer: state.answer,
+      roundsUsed,
       ranks: resultRanks,
     };
     state.phase = state.gameWinner ? "gameEnd" : "roundEnd";
@@ -1007,6 +1341,12 @@
       }
       render();
     }
+
+    if (target.id?.startsWith("ai-type-")) {
+      const index = Number(target.id.replace("ai-type-", "")) - 1;
+      state.config.aiTypes[index] = target.value;
+      render();
+    }
   }
 
   function quickFillAdd({ uncoveredOnly = false } = {}) {
@@ -1077,6 +1417,16 @@
             <div class="mini-stat"><strong>${sequenceCount}</strong><span>Candidates</span></div>
             <div class="mini-stat"><strong>${currentAddAmount()}</strong><span>Add</span></div>
             <div class="mini-stat"><strong>${SCORE_BY_PLAYERS[state.config.playerCount].join("/")}</strong><span>Score</span></div>
+          </div>
+          <div class="ai-seat-grid">
+            ${[1, 2, 3].map((index) => `
+              <label class="mode-field ${index >= state.config.playerCount ? "is-disabled" : ""}" for="ai-type-${index}">
+                <span>${AI_NAMES[index - 1]}</span>
+                <select id="ai-type-${index}" ${index >= state.config.playerCount ? "disabled" : ""}>
+                  ${AI_TYPE_OPTIONS.map((type) => `<option value="${type}" ${type === (state.config.aiTypes[index - 1] || DEFAULT_AI_TYPES[index - 1]) ? "selected" : ""}>${type}</option>`).join("")}
+                </select>
+              </label>
+            `).join("")}
           </div>
           <div class="action-buttons setup-actions">
             <button class="primary" data-action="start-game">Start Game</button>
@@ -1160,7 +1510,7 @@
         </div>
         <div class="player-meta">
           <div class="mini-stat"><strong>${player.book.length}</strong><span>Book</span></div>
-          <div class="mini-stat"><strong>${player.ranked ? `#${player.rank}` : player.skipNext ? "Skip" : "Live"}</strong><span>Status</span></div>
+          <div class="mini-stat"><strong>${player.ranked ? rankLabel(player) : player.skipNext ? "Skip" : "Live"}</strong><span>Status</span></div>
           <div class="mini-stat"><strong>${escapeHtml(player.lastAction)}</strong><span>Action</span></div>
         </div>
         <div class="book-preview">
@@ -1407,7 +1757,7 @@
           <div class="panel-head">
             <div>
               <h2>${isGameOver ? "Game Review" : "Puzzle Review"}</h2>
-              <div class="panel-subtitle">Answer ${state.puzzleResult?.answer || state.answer}</div>
+              <div class="panel-subtitle">Answer ${state.puzzleResult?.answer || state.answer}${state.puzzleResult?.roundsUsed ? ` / ${state.puzzleResult.roundsUsed} rounds` : ""}</div>
             </div>
             <span class="badge">${state.ranks.length}/${state.players.length} ranked</span>
           </div>
@@ -1462,8 +1812,8 @@
           return `
             <div class="seq-cell ${lowLikely ? "is-lowlikely" : ""} ${tableCovered ? "is-covered" : "is-uncovered"}">
               ${mainAction}
-              <button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}">
-                ${lowLikely ? "Low" : "Mark"}
+              <button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}" title="Toggle low likely">
+                L
               </button>
             </div>
           `;
@@ -1489,7 +1839,7 @@
           return `
             <div class="seq-cell ${lowLikely ? "is-lowlikely" : ""}">
               <button class="seq-chip ${live ? "bright selectable" : "grey disabled"} ${selected ? "selected" : ""}" ${attrs} ${live ? "" : "disabled"}>${seq}</button>
-              ${live ? `<button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}">${lowLikely ? "Low" : "Mark"}</button>` : ""}
+              ${live ? `<button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}" title="Toggle low likely">L</button>` : ""}
             </div>
           `;
         }).join("")}
@@ -1565,11 +1915,12 @@
                     <div class="player-name">${escapeHtml(player.name)}</div>
                     <span class="badge">${escapeHtml(player.personality)}</span>
                   </div>
-                  <div class="score">#${player.rank || "-"}</div>
+                  <div class="score">${player.ranked ? rankLabel(player) : "-"}</div>
                 </div>
                 <div class="player-meta">
                   <div class="mini-stat"><strong>${player.candidate.size}</strong><span>Candidates</span></div>
                   <div class="mini-stat"><strong>${player.book.length}</strong><span>Book</span></div>
+                  <div class="mini-stat"><strong>${player.finishRound || "-"}</strong><span>Round</span></div>
                   <div class="mini-stat"><strong>${escapeHtml(player.lastAction)}</strong><span>Final</span></div>
                 </div>
                 <div class="ai-log-lines">
@@ -1594,15 +1945,15 @@
           <div class="panel-head">
             <div>
               <h2>${escapeHtml(title)}</h2>
-              <div class="panel-subtitle">Answer ${state.puzzleResult.answer}</div>
+              <div class="panel-subtitle">Answer ${state.puzzleResult.answer} / ${state.puzzleResult.roundsUsed} rounds</div>
             </div>
             <span class="badge">Target ${state.config.target}</span>
           </div>
           <div class="rank-list">
             ${state.puzzleResult.ranks.map((rank) => `
               <div class="rank-row">
-                <strong>#${rank.rank} ${escapeHtml(rank.name)}</strong>
-                <span>+${rank.points}</span>
+                <strong>${rank.tied ? `Tie #${rank.rank}` : `#${rank.rank}`} ${escapeHtml(rank.name)}</strong>
+                <span>R${rank.finishRound} / +${rank.points}</span>
               </div>
             `).join("")}
           </div>
@@ -1714,6 +2065,11 @@
       skip: "Skip",
     };
     return labels[type] || "Action";
+  }
+
+  function rankLabel(player) {
+    if (!player.ranked) return "-";
+    return `${player.tied ? "Tie " : ""}#${player.rank}`;
   }
 
   function sortOwnBookForSelection(book, player) {

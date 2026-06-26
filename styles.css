@@ -136,6 +136,17 @@ input[type="number"] {
   margin-top: 12px;
 }
 
+.ai-seat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mode-field.is-disabled {
+  opacity: 0.48;
+}
+
 .setup-actions {
   justify-content: space-between;
   align-items: center;
@@ -442,9 +453,8 @@ input[type="number"] {
 }
 
 .seq-cell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
-  gap: 4px;
+  position: relative;
+  display: block;
   min-width: 0;
 }
 
@@ -468,6 +478,7 @@ input[type="number"] {
 .seq-cell .seq-chip {
   width: 100%;
   min-width: 0;
+  padding-right: 24px;
 }
 
 .seq-chip.bright {
@@ -505,14 +516,20 @@ input[type="number"] {
 }
 
 .likelihood-toggle {
-  min-height: 30px;
-  height: 30px;
-  padding: 0 5px;
-  border-radius: 6px;
-  font-size: 0.68rem;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 18px;
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 5px;
+  font-size: 0.58rem;
   font-weight: 800;
   color: var(--muted);
   background: #1a1c18;
+  line-height: 1;
 }
 
 .likelihood-toggle.active {
@@ -610,8 +627,8 @@ input[type="number"] {
 .grid-book {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 7px;
-  min-height: 186px;
+  gap: 9px 12px;
+  min-height: 225px;
   align-content: start;
 }
 
@@ -768,7 +785,8 @@ input[type="number"] {
   }
 
   .mode-grid,
-  .mode-summary {
+  .mode-summary,
+  .ai-seat-grid {
     grid-template-columns: 1fr;
   }
 
@@ -820,12 +838,7 @@ input[type="number"] {
     width: 100%;
   }
 
-  .seq-cell {
-    grid-template-columns: minmax(0, 1fr) 38px;
-  }
-
   .likelihood-toggle {
     font-size: 0.62rem;
-    padding: 0 3px;
   }
 }
