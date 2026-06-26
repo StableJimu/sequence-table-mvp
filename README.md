@@ -111,5 +111,4 @@ The tuned constants are copied into `game.js` as `AI_TUNING`.
 
 The GitHub Pages link can host the solo static prototype, but friend lobbies need a running backend. The included `server.js` uses plain Node HTTP plus Server-Sent Events, so it can be deployed to a Node host such as Render, Railway, Fly.io, or a small VPS.
 
-For a deployed multiplayer build, share the hosted `/multiplayer.html` room link with friends. The host creates a room, sets 2-4 seats, chooses AI types for empty seats, and starts the game.
-After this server change, the deployed Render root URL also opens multiplayer directly.
+For a deployed multiplayer build, share the hosted Render root URL with friends. The host creates a room, sets 2-4 seats, chooses AI types for empty seats, and starts the game. The solo prototype remains available at `/index.html`.
