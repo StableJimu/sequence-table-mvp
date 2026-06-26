@@ -1,24 +1,125 @@
-# Sequence Table MVP
+# Sequence Table
 
-A small local prototype for a social deduction-style sequence guessing game.
+Sequence Table is a small social deduction race about finding one hidden sequence.
 
-Players sit around a shared table and race to identify one hidden permutation, such as `3142`. Each player keeps a public book of sequences they have added, while each player also has a private candidate book that tracks what they still believe could be the answer.
+Each player has a public book of guessed sequences. Everyone can inspect every public book, but each player also has a private candidate book that only shows what they personally still believe could be the answer.
 
-The current MVP is a static browser app with one human player and one to three rule-based AI opponents.
+On each round, players choose one action:
+
+1. Add sequences from their private candidate book into their public book.
+2. Verify selected sequences in their own public book.
+3. Verify the whole table, then skip the next round.
+4. Submit one final guess, then skip the next round if wrong.
+
+Verification only says whether the answer is inside the checked set. It never reveals the exact sequence unless a final guess is correct. Wrong public submissions remove that sequence from every player's candidate book.
 
 ## Play Online
 
-Play the current build here:
+Solo version, deployed directly on GitHub Pages:
 
 https://stablejimu.github.io/sequence-table-mvp/
 
+Online multiplayer version, deployed on Render:
+
+https://sequence-table.onrender.com/
+
+## Modes
+
+Solo mode:
+
+- 2 to 4 total players
+- 1 human plus rule-based AI opponents
+- Sequence length 3, 4, or 5
+- Configurable score target
+
+Online multiplayer:
+
+- X=4 only for now
+- 2 to 4 seats
+- Human players can join by room link or room code
+- Empty seats are filled by configurable AI players
+- Match target is 15 points
+- After each puzzle, every human player must ready up before the next puzzle starts
+
+## Scoring
+
+Each puzzle ranks players by when they find the answer.
+
+- 2 players: `5 / 0`
+- 3 players: `5 / 3 / 0`
+- 4 players: `5 / 3 / 2 / 0`
+
+Ties split the points for the tied placements, rounded to the nearest whole point. If everyone ties, everyone gets 2 points.
+
+In online multiplayer, the match ends automatically after a puzzle when at least one player reaches 15 total points.
+
+## How To Play
+
+Use Add to place possible answers into your public book. This gives you material to verify later, but also gives opponents more public information.
+
+Use Verify Mine to check any live entries in your own public book. A yes result shrinks your private candidate book to that checked set. A no result removes the checked set.
+
+Use Verify Table to check every unique sequence currently visible on the table. This can be powerful, but costs your next round.
+
+Use Submit when your candidate book is small enough to risk a final answer. A wrong submit is public and removes that sequence for everyone.
+
+The useful social layer comes from watching what other players add, verify, and submit. Their choices can imply what their private candidate book probably contains.
+
+## AI Players
+
+AI players do not peek at the answer or at hidden human information. They use:
+
+- Their own candidate book
+- Their own public book
+- Public table books
+- Public wrong submissions
+- Their own verification results
+- Public action patterns
+
+The AI scores possible actions each round:
+
+- Add is useful when the AI needs more candidates in its own book.
+- Verify Mine is useful when it can split the candidate pool.
+- Verify Table is useful when the public table gives a strong split despite the skip cost.
+- Submit is considered when the candidate pool is small.
+
+The AI then chooses with softmax-style randomness, so strong actions are favored without making every AI turn deterministic.
+
+Current AI types:
+
+- Balanced: general value-scored strategy
+- Aggressive: submits earlier
+- Cautious: submits later
+- Binary: benchmark strategy that adds toward a half split, then verifies
+- Reader: uses simple public inference from visible opponent behavior
+
+## AI Tuning
+
+The AI is not trained live in the browser. The current constants were tuned with lightweight self-play simulations.
+
+Run baseline simulations:
+
+```bash
+node tools/ai-selfplay.js
+```
+
+Run parameter search:
+
+```bash
+node tools/ai-selfplay.js search
+```
+
+The search mutates action-value constants such as add value, verify value, table-check value, skip penalty, submit value, and softmax temperature. Better parameter sets are chosen by simulated finish speed and reduced reckless wrong submits.
+
 ## Run Locally
 
-Open `index.html` in a browser.
+Solo static build:
 
-No install step is required for the game itself. It is plain HTML, CSS, and JavaScript.
+```text
+open index.html
+```
 
-For the multiplayer prototype, run the local Node server:
+Multiplayer Node server:
 
 ```bash
 npm start
@@ -30,87 +131,5 @@ Then open:
 http://localhost:3000/
 ```
 
-The Node server opens the multiplayer prototype at `/`. The solo prototype is still available at `/index.html`.
+The multiplayer server owns the hidden answer, verification results, private candidate books, AI turns, room state, and ready checks.
 
-The multiplayer prototype is X=4 only. It supports room codes, 2-4 seats, human joins, and AI-filled empty seats. The server owns the hidden answer, verification results, private candidate books, and AI turns.
-
-After a multiplayer puzzle ends, the host can start a new game with the same seats or return everyone to the same lobby code to change seat count and AI fill.
-
-## Game Modes
-
-- Players: 2 to 4
-- Sequence length: 3, 4, or 5
-- Default mode: 4 players, length 4
-- Score target: configurable in the start screen
-
-Add amount depends on sequence length:
-
-- Length 3: add 2 sequences
-- Length 4: add 3 sequences
-- Length 5: add 10 sequences
-
-## How To Play
-
-Each puzzle has one hidden answer. On your turn, choose one action:
-
-1. Add sequences from your private candidate book into your public book.
-2. Verify any selected live sequences in your own book.
-3. Verify the whole public table, then skip your next turn.
-4. Submit one final guess, then skip your next turn if it is wrong.
-
-Verification only returns whether the answer is inside the checked set. It does not reveal which sequence is correct.
-
-When verification returns yes, your private candidate book shrinks to the checked set. When it returns no, those checked sequences are removed. Wrong public submissions are removed from every player's candidate book.
-
-When the human player wins a puzzle, the AI players keep playing until they all find the real key. The end screen lets you inspect AI logs and review their decisions.
-
-## AI Players
-
-The AI does not peek at the answer or at another player's private candidate book. It only uses information that the player would fairly know:
-
-- Its own public book
-- Its private candidate book
-- Public books on the table
-- Public wrong submissions
-- Its own previous verification results
-
-Each turn, the AI scores possible actions:
-
-- Add is valuable when the AI has useful candidates that are not in its book yet.
-- Verify Mine is valuable when its own book can split the candidate pool, ideally near a half split.
-- Verify Table is valuable when the public table can split the candidate pool enough to justify skipping next turn.
-- Submit is considered when the candidate pool is small, with different thresholds for aggressive, balanced, and cautious AI personalities.
-
-The AI chooses between scored actions with a softmax, so higher-value actions are more likely but not perfectly deterministic.
-
-Current AI seats can be configured on the start screen:
-
-- Balanced, Aggressive, and Cautious use the original value-scored heuristic.
-- Binary is a benchmark strategy that adds toward a half split, then verifies its own book.
-- Reader uses a first-pass public inference layer. It watches public table-check and self-check patterns, then biases its adds, verifies, and submits toward what opponent behavior seems to imply.
-
-## AI Tuning
-
-The AI is not trained live in the browser. Its action values were tuned with lightweight self-play simulation.
-
-Run the baseline evaluator:
-
-```bash
-node tools/ai-selfplay.js
-```
-
-Run the search tuner:
-
-```bash
-node tools/ai-selfplay.js search
-```
-
-The tuner mutates constants such as verify value, table-check value, skip penalty, submit threshold value, and softmax temperature. It then runs many simulated games and keeps constants that improve average finish time while controlling reckless wrong submissions.
-
-The tuned constants are copied into `game.js` as `AI_TUNING`.
-
-## Online Multiplayer Hosting
-
-The GitHub Pages link can host the solo static prototype, but friend lobbies need a running backend. The included `server.js` uses plain Node HTTP plus Server-Sent Events, so it can be deployed to a Node host such as Render, Railway, Fly.io, or a small VPS.
-
-For a deployed multiplayer build, share the hosted Render root URL with friends. The host creates a room, sets 2-4 seats, chooses AI types for empty seats, and starts the game. The solo prototype remains available at `/index.html`.

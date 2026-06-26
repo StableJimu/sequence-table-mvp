@@ -7,6 +7,7 @@ const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
 const PAGE_SIZE = 24;
 const ADD_AMOUNT = 3;
+const SCORE_TARGET = 15;
 const DIGITS = ["1", "2", "3", "4"];
 const SCORE = { 2: [5, 0], 3: [5, 3, 0], 4: [5, 3, 2, 0] };
 const AI_TUNING = {
@@ -87,6 +88,7 @@ function createRoom(hostName) {
     code,
     hostId: host.id,
     playerCount: 2,
+    scoreTarget: SCORE_TARGET,
     aiTypes: [...AI_TYPES],
     players: [host],
     phase: "lobby",
@@ -98,8 +100,10 @@ function createRoom(hostName) {
     publicSignals: [],
     pendingActions: new Map(),
     snapshotBooks: new Map(),
+    roundReady: new Set(),
     clients: new Map(),
     puzzleResult: null,
+    matchResult: null,
   };
   rooms.set(code, room);
   return { room, player: host };
@@ -200,12 +204,29 @@ function startGame(room, player, config) {
 
 function newGame(room, player) {
   if (room.hostId !== player.id) return { error: "Only host can start a new game" };
-  if (room.phase !== "ended") return { error: "Game is not finished yet" };
+  if (room.phase !== "gameOver") return { error: "Match is not finished yet" };
   room.players.forEach((item) => {
     item.score = 0;
   });
+  room.matchResult = null;
   startPuzzle(room);
   return {};
+}
+
+function readyNextRound(room, player) {
+  if (player.type !== "human") return { error: "Only human players can ready up" };
+  if (room.phase !== "between") return { error: "Next puzzle is not waiting for ready checks" };
+  room.roundReady.add(player.id);
+  player.lastAction = "Ready";
+  const humans = room.players.filter((item) => item.type === "human");
+  const allReady = humans.every((item) => room.roundReady.has(item.id));
+  if (allReady) {
+    room.publicFeed.unshift("All human players are ready.");
+    startPuzzle(room);
+    return { started: true };
+  }
+  room.publicFeed.unshift(`${player.name} is ready for the next puzzle.`);
+  return { started: false };
 }
 
 function backToLobby(room, player) {
@@ -237,7 +258,9 @@ function backToLobby(room, player) {
   room.publicSignals = [];
   room.pendingActions = new Map();
   room.snapshotBooks = new Map();
+  room.roundReady = new Set();
   room.puzzleResult = null;
+  room.matchResult = null;
   room.publicFeed = ["Returned to lobby."];
   return {};
 }
@@ -250,7 +273,9 @@ function startPuzzle(room) {
   room.publicEliminated = new Set();
   room.publicSignals = [];
   room.pendingActions = new Map();
+  room.roundReady = new Set();
   room.puzzleResult = null;
+  room.matchResult = null;
   room.publicFeed = ["Puzzle begins."];
   room.players.forEach((player) => {
     player.book = [];
@@ -497,13 +522,36 @@ function endPuzzle(room) {
     });
     cursor += group.length;
   }
-  room.phase = "ended";
+  const standings = [...room.players]
+    .sort((left, right) => right.score - left.score || left.seat - right.seat)
+    .map((player) => ({
+      playerId: player.id,
+      name: player.name,
+      score: player.score,
+      type: player.type,
+    }));
+  const topScore = standings[0]?.score || 0;
+  const matchComplete = topScore >= room.scoreTarget;
+  room.phase = matchComplete ? "gameOver" : "between";
+  room.roundReady = new Set();
   room.puzzleResult = {
     answer: room.answer,
     roundsUsed: Math.max(...room.players.map((player) => player.finishRound || 0)),
     ranks: resultRanks,
+    standings,
+    scoreTarget: room.scoreTarget,
+    matchComplete,
   };
+  room.matchResult = matchComplete
+    ? {
+        scoreTarget: room.scoreTarget,
+        winners: standings.filter((player) => player.score === topScore),
+        standings,
+      }
+    : null;
   room.publicFeed.unshift(`Puzzle complete. Answer ${room.answer}.`);
+  if (matchComplete) room.publicFeed.unshift(`Match complete at ${topScore} points.`);
+  else room.publicFeed.unshift("Waiting for every human player to ready up.");
   broadcast(room);
 }
 
@@ -613,11 +661,13 @@ function chooseSoftmaxOption(options, temperature) {
 }
 
 function publicState(room, viewer) {
+  const humans = room.players.filter((player) => player.type === "human");
   return {
     code: room.code,
     hostId: room.hostId,
     viewerId: viewer.id,
     playerCount: room.playerCount,
+    scoreTarget: room.scoreTarget,
     aiTypes: room.aiTypes,
     phase: room.phase,
     roundNumber: room.roundNumber,
@@ -649,9 +699,16 @@ function publicState(room, viewer) {
       ranked: viewer.ranked,
       rank: viewer.rank,
     },
+    nextReady: {
+      count: humans.filter((player) => room.roundReady.has(player.id)).length,
+      total: humans.length,
+      viewerReady: room.roundReady.has(viewer.id),
+      readyIds: humans.filter((player) => room.roundReady.has(player.id)).map((player) => player.id),
+    },
     publicFeed: room.publicFeed,
     publicEliminated: [...room.publicEliminated],
-    puzzleResult: room.phase === "ended" ? room.puzzleResult : null,
+    puzzleResult: ["between", "gameOver"].includes(room.phase) ? room.puzzleResult : null,
+    matchResult: room.phase === "gameOver" ? room.matchResult : null,
   };
 }
 
@@ -788,6 +845,16 @@ const server = http.createServer(async (req, res) => {
       if (result.error) return sendJson(res, 400, result);
       broadcast(auth.room);
       return sendJson(res, 200, { ok: true });
+    }
+    const readyMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9]{4})\/ready-next$/);
+    if (req.method === "POST" && readyMatch) {
+      const body = await readBody(req);
+      const auth = authRoom(readyMatch[1], body.playerId, body.token);
+      if (auth.error) return sendJson(res, 401, auth);
+      const result = readyNextRound(auth.room, auth.player);
+      if (result.error) return sendJson(res, 400, result);
+      if (!result.started) broadcast(auth.room);
+      return sendJson(res, 200, { ok: true, started: Boolean(result.started) });
     }
     const actionMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9]{4})\/action$/);
     if (req.method === "POST" && actionMatch) {

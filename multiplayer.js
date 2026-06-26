@@ -102,6 +102,10 @@
         await api(`/api/rooms/${store.code}/lobby`, { playerId: store.playerId, token: store.token });
         return;
       }
+      if (action === "ready-next") {
+        await api(`/api/rooms/${store.code}/ready-next`, { playerId: store.playerId, token: store.token });
+        return;
+      }
       if (action === "copy-link") {
         await navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${store.code}`);
         store.error = "Room link copied.";
@@ -337,18 +341,19 @@
         <div class="status-item"><div class="label">Room</div><div class="value">${state.code}</div></div>
         <div class="status-item"><div class="label">Round</div><div class="value">${state.roundNumber}</div></div>
         <div class="status-item"><div class="label">Candidates</div><div class="value">${state.viewer.candidate.length} / ${state.allSequences.length}</div></div>
-        <div class="status-item"><div class="label">Status</div><div class="value">${state.viewer.ranked ? `#${state.viewer.rank}` : state.viewer.pending ? "Submitted" : "Choose"}</div></div>
+        <div class="status-item"><div class="label">Target</div><div class="value">${state.scoreTarget}</div></div>
+        <div class="status-item"><div class="label">Status</div><div class="value">${statusLabel()}</div></div>
       </section>
       <main class="multiplayer-layout">
         <section class="table-stage">
           ${state.players.map((player) => renderPlayer(player)).join("")}
           <div class="center-table">
-            <div class="center-title"><div><h2>${state.phase === "ended" ? "Puzzle Complete" : "Hidden sequence"}</h2><div class="answer-mask">${renderAnswerMask()}</div></div></div>
+            <div class="center-title"><div><h2>${centerTitle()}</h2><div class="answer-mask">${renderAnswerMask()}</div></div></div>
             <div class="action-feed">${state.publicFeed.map((line) => `<div class="feed-line">${escapeHtml(line)}</div>`).join("")}</div>
           </div>
         </section>
         <aside class="action-panel">
-          ${state.phase === "ended" ? renderResult() : renderActionPanel()}
+          ${["between", "gameOver"].includes(state.phase) ? renderResult() : renderActionPanel()}
         </aside>
       </main>
     `;
@@ -448,18 +453,38 @@
   function renderResult() {
     const result = store.state.puzzleResult;
     const isHost = store.state.hostId === store.state.viewerId;
+    const isGameOver = store.state.phase === "gameOver";
+    const ready = store.state.nextReady || { count: 0, total: 0, viewerReady: false };
     return `
-      <div class="panel-head"><div><h2>Puzzle Complete</h2><div class="panel-subtitle">Answer ${result.answer} / ${result.roundsUsed} rounds</div></div></div>
+      <div class="panel-head"><div><h2>${isGameOver ? "Match Complete" : "Puzzle Complete"}</h2><div class="panel-subtitle">Answer ${result.answer} / ${result.roundsUsed} rounds</div></div><span class="badge">${result.scoreTarget} point target</span></div>
       <div class="rank-list">
         ${result.ranks.map((rank) => `<div class="rank-row"><strong>${rank.tied ? `Tie #${rank.rank}` : `#${rank.rank}`} ${escapeHtml(rank.name)}</strong><span>R${rank.finishRound} / +${rank.points}</span></div>`).join("")}
       </div>
+      <div class="panel-head result-subhead"><div><h2>Scoreboard</h2><div class="panel-subtitle">${isGameOver ? "Final standings" : "Current match scores"}</div></div></div>
+      <div class="rank-list">
+        ${result.standings.map((player, index) => `<div class="rank-row"><strong>${index + 1}. ${escapeHtml(player.name)}</strong><span>${player.score}</span></div>`).join("")}
+      </div>
+      ${isGameOver ? renderGameOverControls(isHost) : `
+        <div class="mp-wait">Ready ${ready.count} / ${ready.total}</div>
+        <div class="action-buttons">
+          <button class="primary" data-action="ready-next" ${ready.viewerReady ? "disabled" : ""}>${ready.viewerReady ? "Ready" : "Ready for Next Round"}</button>
+          ${isHost ? `<button class="quiet" data-action="back-to-lobby">Back to Lobby</button>` : ""}
+        </div>
+      `}
+      ${renderPrivateLog()}
+    `;
+  }
+
+  function renderGameOverControls(isHost) {
+    const winners = store.state.matchResult?.winners || [];
+    return `
+      <div class="mp-wait">${winners.map((player) => escapeHtml(player.name)).join(", ")} reached ${store.state.scoreTarget} points.</div>
       ${isHost ? `
         <div class="action-buttons">
-          <button class="primary" data-action="new-game">New Game</button>
+          <button class="primary" data-action="new-game">New Match</button>
           <button class="quiet" data-action="back-to-lobby">Back to Lobby</button>
         </div>
       ` : `<div class="mp-wait">Waiting for host.</div>`}
-      ${renderPrivateLog()}
     `;
   }
 
@@ -530,7 +555,22 @@
 
   function renderAnswerMask() {
     const answer = store.state.puzzleResult?.answer || "????";
-    return answer.split("").map((digit) => `<span class="digit-tile">${store.state.phase === "ended" ? digit : "?"}</span>`).join("");
+    return answer.split("").map((digit) => `<span class="digit-tile">${["between", "gameOver"].includes(store.state.phase) ? digit : "?"}</span>`).join("");
+  }
+
+  function centerTitle() {
+    if (store.state.phase === "gameOver") return "Match complete";
+    if (store.state.phase === "between") return "Puzzle complete";
+    return "Hidden sequence";
+  }
+
+  function statusLabel() {
+    const state = store.state;
+    if (state.phase === "gameOver") return "Match End";
+    if (state.phase === "between") return state.nextReady?.viewerReady ? "Ready" : "Review";
+    if (state.viewer.ranked) return `#${state.viewer.rank}`;
+    if (state.viewer.pending) return "Submitted";
+    return "Choose";
   }
 
   function actionLabel(type) {

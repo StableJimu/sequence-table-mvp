@@ -70,6 +70,10 @@
   overflow: auto;
 }
 
+.result-subhead {
+  margin-top: 14px;
+}
+
 .mp-wait {
   padding: 14px;
   border: 1px dashed var(--line);
