@@ -56,6 +56,7 @@
     publicFeed: [],
     puzzleResult: null,
     gameWinner: null,
+    lowLikely: new Set(),
     ui: {
       actionPage: 0,
       drawerOpen: false,
@@ -96,6 +97,7 @@
     state.publicFeed = [];
     state.puzzleResult = null;
     state.gameWinner = null;
+    state.lowLikely = new Set();
     state.ui.drawerOpen = false;
     state.ui.aiLogsOpen = false;
     state.ui.resultModalOpen = false;
@@ -141,6 +143,7 @@
     state.snapshotBooks = new Map();
     state.puzzleResult = null;
     state.gameWinner = null;
+    state.lowLikely = new Set();
     state.ui.drawerOpen = false;
     state.ui.aiLogsOpen = false;
     state.ui.resultModalOpen = false;
@@ -936,8 +939,22 @@
       return;
     }
 
+    if (action === "toggle-lowlikely" && seq) {
+      toggleSetValue(state.lowLikely, seq);
+      playCue("tick");
+      render();
+      return;
+    }
+
     if (action === "quick-fill") {
       quickFillAdd();
+      playCue("add");
+      render();
+      return;
+    }
+
+    if (action === "quick-fill-uncovered") {
+      quickFillAdd({ uncoveredOnly: true });
       playCue("add");
       render();
       return;
@@ -992,8 +1009,11 @@
     }
   }
 
-  function quickFillAdd() {
-    const addable = getHumanAddable().filter((seq) => !state.ui.selectedAdd.has(seq));
+  function quickFillAdd({ uncoveredOnly = false } = {}) {
+    const tableSet = getCurrentTableSet();
+    const addable = getHumanAddable()
+      .filter((seq) => !state.ui.selectedAdd.has(seq))
+      .filter((seq) => !uncoveredOnly || !tableSet.has(seq));
     const needed = currentAddAmount() - state.ui.selectedAdd.size;
     sampleMany(addable, needed).forEach((seq) => state.ui.selectedAdd.add(seq));
   }
@@ -1269,13 +1289,22 @@
     const page = clampPage(state.ui.actionPage, addable.length);
     state.ui.actionPage = page;
     const picked = state.ui.selectedAdd.size;
+    const tableSet = getCurrentTableSet();
+    const uncovered = addable.filter((seq) => !tableSet.has(seq)).length;
+    const covered = addable.length - uncovered;
     return `
       <aside class="action-panel">
-        ${renderPanelHeader(`Add ${currentAddAmount()}`, "Select from your candidate book.", `${picked}/${currentAddAmount()} selected`)}
+        ${renderPanelHeader(`Add ${currentAddAmount()}`, "Uncovered table candidates are listed first.", `${picked}/${currentAddAmount()} selected`)}
         <div class="book-tools">
           <button class="quiet" data-action="back-to-choice">Back</button>
           <button class="accent" data-action="quick-fill">Quick Fill ${currentAddAmount()}</button>
+          <button class="accent" data-action="quick-fill-uncovered">Fill Not On Table</button>
           <button class="primary" data-action="confirm-action">Commit Add</button>
+        </div>
+        <div class="book-tools compact-tools">
+          <span class="badge">${uncovered} not on table</span>
+          <span class="badge">${covered} already on table</span>
+          <span class="badge">${state.lowLikely.size} low likely</span>
         </div>
         ${renderSequenceGrid(addable, page, "add", state.ui.selectedAdd)}
         ${renderPager("action", page, addable.length)}
@@ -1323,7 +1352,7 @@
   }
 
   function renderSubmitPanel() {
-    const candidates = sequencesFromSet(getHuman().candidate);
+    const candidates = sortCandidatesForChoice(sequencesFromSet(getHuman().candidate));
     const page = clampPage(state.ui.actionPage, candidates.length);
     state.ui.actionPage = page;
     return `
@@ -1422,10 +1451,22 @@
       <div class="grid-book">
         ${pageItems.map((seq) => {
           const selected = selectedSet.has(seq);
+          const lowLikely = state.lowLikely.has(seq);
+          const tableCovered = getCurrentTableSet().has(seq);
           const actionAttr = actionByMode[mode]
             ? `data-action="${actionByMode[mode]}" data-seq="${seq}"`
             : "";
-          return `<button class="seq-chip bright selectable ${selected ? "selected" : ""}" ${actionAttr}>${seq}</button>`;
+          const mainAction = actionAttr
+            ? `<button class="seq-chip bright selectable ${selected ? "selected" : ""}" ${actionAttr}>${seq}</button>`
+            : `<div class="seq-chip bright">${seq}</div>`;
+          return `
+            <div class="seq-cell ${lowLikely ? "is-lowlikely" : ""} ${tableCovered ? "is-covered" : "is-uncovered"}">
+              ${mainAction}
+              <button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}">
+                ${lowLikely ? "Low" : "Mark"}
+              </button>
+            </div>
+          `;
         }).join("")}
       </div>
     `;
@@ -1443,8 +1484,14 @@
         ${pageItems.map((seq) => {
           const live = human.candidate.has(seq);
           const selected = state.ui.selectedVerify.has(seq);
+          const lowLikely = state.lowLikely.has(seq);
           const attrs = live ? `data-action="toggle-verify" data-seq="${seq}"` : "";
-          return `<button class="seq-chip ${live ? "bright selectable" : "grey disabled"} ${selected ? "selected" : ""}" ${attrs} ${live ? "" : "disabled"}>${seq}</button>`;
+          return `
+            <div class="seq-cell ${lowLikely ? "is-lowlikely" : ""}">
+              <button class="seq-chip ${live ? "bright selectable" : "grey disabled"} ${selected ? "selected" : ""}" ${attrs} ${live ? "" : "disabled"}>${seq}</button>
+              ${live ? `<button class="likelihood-toggle ${lowLikely ? "active" : ""}" data-action="toggle-lowlikely" data-seq="${seq}">${lowLikely ? "Low" : "Mark"}</button>` : ""}
+            </div>
+          `;
         }).join("")}
       </div>
     `;
@@ -1472,22 +1519,24 @@
   }
 
   function renderCandidateDrawer() {
-    const candidates = sequencesFromSet(getHuman().candidate);
+    const candidates = sortCandidatesForChoice(sequencesFromSet(getHuman().candidate));
     const page = clampPage(state.ui.drawerPage, candidates.length);
     state.ui.drawerPage = page;
+    const lowLikely = candidates.filter((seq) => state.lowLikely.has(seq)).length;
     return `
       <div class="drawer-backdrop">
         <section class="drawer">
           <div class="panel-head">
             <div>
               <h2>Candidate Book</h2>
-              <div class="panel-subtitle">${candidates.length} bright candidates</div>
+              <div class="panel-subtitle">${candidates.length} bright candidates, ${lowLikely} marked low likely</div>
             </div>
             <button class="quiet" data-action="close-drawer">Close</button>
           </div>
           <div class="book-tools">
             <span class="badge">X=${state.config.sequenceLength}</span>
             <span class="badge">All private</span>
+            <span class="badge">Mark moves to back</span>
           </div>
           ${renderSequenceGrid(candidates, page, "drawer", new Set())}
           ${renderPager("drawer", page, candidates.length)}
@@ -1588,11 +1637,19 @@
 
   function getHumanAddable() {
     const human = getHuman();
-    return sequencesFromSet(human.candidate).filter((seq) => !human.book.includes(seq));
+    return sortAddableForChoice(sequencesFromSet(human.candidate).filter((seq) => !human.book.includes(seq)));
   }
 
   function getSnapshotTableSet() {
     return tableSetFromSnapshot(state.snapshotBooks);
+  }
+
+  function getCurrentTableSet() {
+    const tableSet = new Set();
+    state.players.forEach((player) => {
+      player.book.forEach((seq) => tableSet.add(seq));
+    });
+    return tableSet;
   }
 
   function tableSetFromSnapshot(snapshotBooks) {
@@ -1664,7 +1721,32 @@
       const leftLive = player.candidate.has(left) ? 0 : 1;
       const rightLive = player.candidate.has(right) ? 0 : 1;
       if (leftLive !== rightLive) return leftLive - rightLive;
+      const leftLow = state.lowLikely.has(left) ? 1 : 0;
+      const rightLow = state.lowLikely.has(right) ? 1 : 0;
+      if (leftLow !== rightLow) return leftLow - rightLow;
       return book.indexOf(left) - book.indexOf(right);
+    });
+  }
+
+  function sortAddableForChoice(sequences) {
+    const tableSet = getCurrentTableSet();
+    return [...sequences].sort((left, right) => {
+      const leftLow = state.lowLikely.has(left) ? 1 : 0;
+      const rightLow = state.lowLikely.has(right) ? 1 : 0;
+      if (leftLow !== rightLow) return leftLow - rightLow;
+      const leftCovered = tableSet.has(left) ? 1 : 0;
+      const rightCovered = tableSet.has(right) ? 1 : 0;
+      if (leftCovered !== rightCovered) return leftCovered - rightCovered;
+      return allSequences.indexOf(left) - allSequences.indexOf(right);
+    });
+  }
+
+  function sortCandidatesForChoice(sequences) {
+    return [...sequences].sort((left, right) => {
+      const leftLow = state.lowLikely.has(left) ? 1 : 0;
+      const rightLow = state.lowLikely.has(right) ? 1 : 0;
+      if (leftLow !== rightLow) return leftLow - rightLow;
+      return allSequences.indexOf(left) - allSequences.indexOf(right);
     });
   }
 

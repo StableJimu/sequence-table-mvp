@@ -441,6 +441,13 @@ input[type="number"] {
   overflow: hidden;
 }
 
+.seq-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 4px;
+  min-width: 0;
+}
+
 .seq-chip {
   display: inline-grid;
   place-items: center;
@@ -456,6 +463,11 @@ input[type="number"] {
   font-size: 0.86rem;
   letter-spacing: 0;
   user-select: none;
+}
+
+.seq-cell .seq-chip {
+  width: 100%;
+  min-width: 0;
 }
 
 .seq-chip.bright {
@@ -480,6 +492,33 @@ input[type="number"] {
 .seq-chip.selected {
   border-color: var(--gold);
   box-shadow: 0 0 0 2px rgba(211, 170, 83, 0.32);
+}
+
+.seq-cell.is-covered .seq-chip.bright {
+  border-color: rgba(98, 183, 201, 0.58);
+}
+
+.seq-cell.is-lowlikely .seq-chip.bright {
+  border-color: rgba(185, 177, 164, 0.36);
+  background: #272a24;
+  color: #bfc9b6;
+}
+
+.likelihood-toggle {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--muted);
+  background: #1a1c18;
+}
+
+.likelihood-toggle.active {
+  border-color: rgba(231, 102, 79, 0.66);
+  color: #ffd1c9;
+  background: #3a241f;
 }
 
 .seq-chip.selectable {
@@ -562,6 +601,10 @@ input[type="number"] {
   flex-wrap: wrap;
   gap: 8px;
   margin: 12px 0;
+}
+
+.compact-tools {
+  margin-top: -4px;
 }
 
 .grid-book {
@@ -775,5 +818,14 @@ input[type="number"] {
   .seq-chip {
     min-width: 0;
     width: 100%;
+  }
+
+  .seq-cell {
+    grid-template-columns: minmax(0, 1fr) 38px;
+  }
+
+  .likelihood-toggle {
+    font-size: 0.62rem;
+    padding: 0 3px;
   }
 }

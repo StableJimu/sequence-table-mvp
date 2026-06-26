@@ -6,6 +6,12 @@ Players sit around a shared table and race to identify one hidden permutation, s
 
 The current MVP is a static browser app with one human player and one to three rule-based AI opponents.
 
+## Play Online
+
+Play the current build here:
+
+https://stablejimu.github.io/sequence-table-mvp/
+
 ## Run Locally
 
 Open `index.html` in a browser.
